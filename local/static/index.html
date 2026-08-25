@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CBR to OBS - Migration Tool</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script>
+    tailwind.config = {
+      theme: { extend: { colors: { huawei: { red: '#C7000B', dark: '#1E1E1E', blue: '#0073C5' } } } }
+    }
+  </script>
+  <style>
+    [v-cloak] { display: none; }
+    body { background: #f9fafb; }
+  </style>
+</head>
+<body>
+<div id="app" v-cloak>
+
+  <!-- LOGIN -->
+  <div v-if="!loggedIn && !showProjectSelect" class="min-h-screen flex items-center justify-center">
+    <div class="w-full max-w-md">
+      <div class="text-center mb-8">
+        <div class="inline-flex items-center justify-center w-16 h-16 bg-huawei-dark rounded-2xl mb-4">
+          <svg class="w-8 h-8 text-huawei-red" fill="currentColor" viewBox="0 0 24 24"><path d="M17.5 19a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm-11 0a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm5.5-7a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9z"/></svg>
+        </div>
+        <h1 class="text-2xl font-bold">CBR → OBS Migration</h1>
+        <p class="text-gray-500 mt-1">Huawei Cloud Backup Migration Tool</p>
+      </div>
+
+      <form @submit.prevent="login" class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Access Key (AK)</label>
+          <input v-model="creds.ak" type="text" class="w-full px-3 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-huawei-blue focus:border-transparent outline-none" placeholder="AKXXXXXXXX..." required>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Secret Key (SK)</label>
+          <input v-model="creds.sk" type="password" class="w-full px-3 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-huawei-blue focus:border-transparent outline-none" placeholder="sk-xxxx..." required>
+        </div>
+        <div v-if="loginError" class="flex items-center gap-2 text-red-600 text-sm bg-red-50 p-3 rounded-lg">
+          <span>{{ loginError }}</span>
+        </div>
+        <button type="submit" :disabled="loginLoading" class="w-full inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium bg-huawei-red text-white hover:bg-red-700 disabled:opacity-50">
+          <span v-if="loginLoading">Validando...</span>
+          <span v-else>Ingresar</span>
+        </button>
+      </form>
+
+      <p class="text-center text-xs text-gray-400 mt-6">Las credenciales se guardan solo en esta sesion.</p>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div v-else-if="loggedIn" class="min-h-screen flex">
+    <!-- Sidebar -->
+    <aside class="w-64 bg-huawei-dark text-white flex flex-col">
+      <div class="p-6 border-b border-gray-700">
+        <h1 class="text-lg font-bold">CBR → OBS</h1>
+        <p class="text-xs text-gray-400">Migration Tool</p>
+      </div>
+      <nav class="flex-1 p-4 space-y-1">
+        <button v-for="item in navItems" @click="page = item.key"
+          :class="page === item.key ? 'bg-huawei-red' : 'text-gray-400 hover:bg-gray-800 hover:text-white'"
+          class="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors w-full font-medium text-sm">
+          <span v-html="item.icon"></span> {{ item.label }}
+        </button>
+      </nav>
+      <div class="p-4 border-t border-gray-700">
+        <button @click="logout" class="flex items-center gap-3 px-4 py-3 rounded-lg text-gray-400 hover:bg-gray-800 hover:text-white transition-colors w-full font-medium text-sm">
+          <span>←</span> Cerrar Sesion
+        </button>
+      </div>
+    </aside>
+
+    <!-- Content -->
+    <main class="flex-1 overflow-auto p-8">
+
+      <!-- DASHBOARD -->
+      <div v-if="page === 'dashboard'" class="space-y-6">
+        <div class="flex items-center justify-between">
+          <h1 class="text-2xl font-bold">Dashboard</h1>
+          <button @click="page = 'backups'" class="inline-flex items-center px-4 py-2 rounded-lg font-medium bg-huawei-red text-white hover:bg-red-700">+ Nueva Migracion</button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <p class="text-sm text-gray-500">Total Jobs</p>
+            <p class="text-2xl font-bold">{{ jobs.length }}</p>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <p class="text-sm text-gray-500">Activos</p>
+            <p class="text-2xl font-bold text-blue-600">{{ activeJobs.length }}</p>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <p class="text-sm text-gray-500">Completados</p>
+            <p class="text-2xl font-bold text-green-600">{{ completedJobs.length }}</p>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <p class="text-sm text-gray-500">Fallidos</p>
+            <p class="text-2xl font-bold text-red-600">{{ failedJobs.length }}</p>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h2 class="text-lg font-bold mb-4">Jobs Recientes</h2>
+          <p v-if="jobs.length === 0" class="text-gray-500 text-center py-8">No hay migraciones.</p>
+          <table v-else class="w-full">
+            <thead><tr class="text-left text-sm text-gray-500 border-b border-gray-200">
+              <th class="pb-2 font-medium">Backup</th><th class="pb-2 font-medium">Origen</th><th class="pb-2 font-medium">Destino</th><th class="pb-2 font-medium">Estado</th><th class="pb-2 font-medium">Actualizado</th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="job in recentJobs" :key="job.job_id" @click="selectJob(job.job_id)" class="hover:bg-gray-50 border-b border-gray-100 cursor-pointer">
+                <td class="py-3 text-sm">{{ job.backup_name }}</td>
+                <td class="py-3 text-sm">{{ regionLabel(job.source_region) }}</td>
+                <td class="py-3 text-sm">{{ regionLabel(job.target_region) }}</td>
+                <td class="py-3"><span :class="statusClass(job.step)" class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold">{{ statusLabel(job.step) }}</span></td>
+                <td class="py-3 text-sm text-gray-500">{{ timeAgo(job.updated_at) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- BACKUPS -->
+      <div v-if="page === 'backups'" class="space-y-6">
+        <div class="flex items-center justify-between">
+          <h1 class="text-2xl font-bold">Backups de EVS</h1>
+          <div class="flex items-center gap-4">
+            <div class="inline-flex rounded-lg border border-gray-300 overflow-hidden">
+              <button @click="backupRegion = 'buenosaires'; fetchBackups()" :class="backupRegion === 'buenosaires' ? 'bg-huawei-red text-white' : 'bg-white text-gray-600'" class="px-4 py-2 font-medium text-sm">Buenos Aires</button>
+              <button @click="backupRegion = 'santiago'; fetchBackups()" :class="backupRegion === 'santiago' ? 'bg-huawei-red text-white' : 'bg-white text-gray-600'" class="px-4 py-2 font-medium text-sm">Santiago</button>
+            </div>
+            <button @click="fetchBackups" class="inline-flex items-center px-4 py-2 rounded-lg font-medium bg-gray-200 text-gray-800 hover:bg-gray-300">↻ Actualizar</button>
+          </div>
+        </div>
+        <div v-if="backupError" class="flex items-center gap-2 text-red-600 bg-red-50 p-4 rounded-lg"><span>{{ backupError }}</span></div>
+        <div v-if="migrateMsg" class="flex items-start gap-2 text-green-600 bg-green-50 p-4 rounded-lg whitespace-pre-wrap"><span>{{ migrateMsg }}</span></div>
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <div v-if="backupsLoading" class="flex items-center justify-center py-12"><span class="animate-spin">⟳</span></div>
+          <p v-else-if="backups.length === 0" class="text-gray-500 text-center py-12">No hay backups en {{ regionLabel(backupRegion) }}</p>
+          <div v-else>
+            <div class="flex items-center justify-between mb-4">
+              <label class="flex items-center gap-2 text-sm text-gray-600">
+                <input type="checkbox" :checked="selectedBackups.size === backups.length" @change="toggleAllBackups" class="rounded"> Seleccionar todos
+              </label>
+              <button v-if="selectedBackups.size > 0" @click="showBatchModal = true" class="inline-flex items-center px-4 py-2 rounded-lg font-medium bg-huawei-red text-white">
+                Migrar {{ selectedBackups.size }} seleccionado(s)
+              </button>
+            </div>
+            <table class="w-full">
+              <thead><tr class="text-left text-sm text-gray-500 border-b border-gray-200">
+                <th class="pb-2 w-8"></th><th class="pb-2 font-medium">Nombre</th><th class="pb-2 font-medium">ID</th><th class="pb-2 font-medium">Tamano</th><th class="pb-2 font-medium">Estado</th><th class="pb-2 font-medium">Fecha</th><th class="pb-2"></th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="b in backups" :key="b.id" class="hover:bg-gray-50 border-b border-gray-100">
+                  <td class="py-3"><input type="checkbox" :checked="selectedBackups.has(b.id)" @change="toggleBackup(b.id)" class="rounded"></td>
+                  <td class="py-3 text-sm font-medium">{{ b.name }}</td>
+                  <td class="py-3 text-sm text-gray-500 font-mono">{{ b.id.slice(0,12) }}...</td>
+                  <td class="py-3 text-sm">{{ b.resource_size }} GB</td>
+                  <td class="py-3"><span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-100 text-green-700">{{ b.status }}</span></td>
+                  <td class="py-3 text-sm text-gray-500">{{ formatDate(b.created_at) }}</td>
+                  <td class="py-3"><button @click="openSingleMigrate(b)" class="inline-flex items-center px-3 py-1 rounded-lg font-medium text-sm bg-gray-200 text-gray-800 hover:bg-gray-300">→ Migrar</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- MIGRATIONS -->
+      <div v-if="page === 'migrations'" class="space-y-6">
+        <div class="flex items-center justify-between">
+          <h1 class="text-2xl font-bold">Migraciones</h1>
+          <button @click="fetchJobs" class="inline-flex items-center px-4 py-2 rounded-lg font-medium bg-gray-200 text-gray-800 hover:bg-gray-300">↻ Actualizar</button>
+        </div>
+        <div class="flex gap-2">
+          <button v-for="f in filters" @click="jobFilter = f.value" :class="jobFilter === f.value ? 'bg-huawei-red text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'" class="px-4 py-2 rounded-lg font-medium text-sm">{{ f.label }}</button>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <div v-if="jobsLoading" class="flex items-center justify-center py-12"><span class="animate-spin">⟳</span></div>
+          <p v-else-if="filteredJobs.length === 0" class="text-gray-500 text-center py-12">No hay migraciones.</p>
+          <table v-else class="w-full">
+            <thead><tr class="text-left text-sm text-gray-500 border-b border-gray-200">
+              <th class="pb-2 font-medium">Backup</th><th class="pb-2 font-medium">Origen</th><th class="pb-2 font-medium">Destino</th><th class="pb-2 font-medium">Paso</th><th class="pb-2 font-medium">Tamano</th><th class="pb-2 font-medium">Actualizado</th><th class="pb-2 font-medium">Acciones</th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="job in filteredJobs" :key="job.job_id" class="hover:bg-gray-50 border-b border-gray-100">
+                <td class="py-3 text-sm font-medium">{{ job.backup_name }}</td>
+                <td class="py-3 text-sm">{{ regionLabel(job.source_region) }}</td>
+                <td class="py-3 text-sm">{{ regionLabel(job.target_region) }}</td>
+                <td class="py-3"><span :class="statusClass(job.step)" class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold">{{ statusLabel(job.step) }}</span></td>
+                <td class="py-3 text-sm">{{ job.resource_size_gb }} GB</td>
+                <td class="py-3 text-sm text-gray-500">{{ formatDateTime(job.updated_at) }}</td>
+                <td class="py-3">
+                  <div class="flex items-center gap-2">
+                    <button @click="selectJob(job.job_id)" class="text-huawei-blue hover:underline text-sm">Ver</button>
+                    <button v-if="job.step === 'failed'" @click="retryJob(job.job_id)" class="text-blue-600 hover:text-blue-800 text-sm">Reintentar</button>
+                    <button v-if="job.step === 'completed' || job.step === 'failed'" @click="deleteJob(job.job_id)" class="text-red-500 hover:text-red-700 text-sm">Eliminar</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- JOB DETAIL -->
+      <div v-if="page === 'jobDetail'" class="space-y-6">
+        <button @click="page = 'migrations'" class="inline-flex items-center text-huawei-blue hover:underline text-sm">← Volver</button>
+        <div v-if="selectedJobData" class="space-y-6">
+          <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <div class="flex items-center justify-between mb-4">
+              <h1 class="text-2xl font-bold">{{ selectedJobData.backup_name }}</h1>
+              <span :class="statusClass(selectedJobData.step)" class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold">{{ statusLabel(selectedJobData.step) }}</span>
+            </div>
+            <p class="text-sm text-gray-500 font-mono">Job ID: {{ selectedJobData.job_id }}</p>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h2 class="text-lg font-bold mb-4">Progreso</h2>
+              <div class="space-y-3">
+                <div v-for="(s, idx) in stepList(selectedJobData)" :key="s" class="flex items-center gap-3">
+                  <div :class="stepCircleClass(selectedJobData, s, idx)" class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold">
+                    <span v-if="isStepDone(selectedJobData, s)">✓</span>
+                    <span v-else-if="isStepCurrent(selectedJobData, s)">⟳</span>
+                    <span v-else>{{ idx + 1 }}</span>
+                  </div>
+                  <span :class="isStepCurrent(selectedJobData, s) ? 'text-blue-600' : isStepDone(selectedJobData, s) ? 'text-gray-500' : 'text-gray-400'" class="text-sm font-medium">{{ statusLabel(s) }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h2 class="text-lg font-bold mb-4">Detalles</h2>
+              <dl class="space-y-3 text-sm">
+                <div class="flex justify-between"><dt class="text-gray-500">Origen</dt><dd>{{ regionLabel(selectedJobData.source_region) }}</dd></div>
+                <div class="flex justify-between"><dt class="text-gray-500">Destino</dt><dd>{{ regionLabel(selectedJobData.target_region) }}</dd></div>
+                <div class="flex justify-between"><dt class="text-gray-500">Cross-region</dt><dd>{{ selectedJobData.cross_region ? 'Si' : 'No' }}</dd></div>
+                <div class="flex justify-between"><dt class="text-gray-500">Tamano</dt><dd>{{ selectedJobData.resource_size_gb }} GB</dd></div>
+                <div class="flex justify-between"><dt class="text-gray-500">Creado</dt><dd>{{ formatDateTime(selectedJobData.created_at) }}</dd></div>
+                <div class="flex justify-between"><dt class="text-gray-500">Actualizado</dt><dd>{{ formatDateTime(selectedJobData.updated_at) }}</dd></div>
+                <div class="flex justify-between"><dt class="text-gray-500">Reintentos</dt><dd>{{ selectedJobData.retry_count }}</dd></div>
+                <div class="flex justify-between"><dt class="text-gray-500">Volumen</dt><dd class="font-mono text-xs">{{ selectedJobData.volume_id || '-' }}</dd></div>
+                <div class="flex justify-between"><dt class="text-gray-500">Imagen</dt><dd class="font-mono text-xs">{{ selectedJobData.image_id || '-' }}</dd></div>
+                <div class="flex justify-between"><dt class="text-gray-500">Bucket</dt><dd class="font-mono text-xs">{{ selectedJobData.bucket_name || '-' }}</dd></div>
+              </dl>
+            </div>
+          </div>
+          <div v-if="selectedJobData.step === 'failed' && selectedJobData.error" class="bg-white rounded-xl shadow-sm border border-red-200 p-6">
+            <h2 class="text-lg font-bold text-red-600 mb-2">Error</h2>
+            <p class="text-sm text-red-600 bg-red-50 p-3 rounded-lg">{{ selectedJobData.error }}</p>
+            <button @click="retryJob(selectedJobData.job_id)" class="mt-4 inline-flex items-center px-4 py-2 rounded-lg font-medium bg-huawei-red text-white">Reintentar</button>
+          </div>
+          <div v-if="selectedJobData.step === 'completed'" class="bg-white rounded-xl shadow-sm border border-green-200 p-6">
+            <h2 class="text-lg font-bold text-green-600 mb-2">Migracion Completada</h2>
+            <p class="text-sm text-green-600">Archivo en OBS: {{ selectedJobData.object_key }}</p>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- BATCH MIGRATE MODAL -->
+  <div v-if="showBatchModal" class="fixed inset-0 z-50 flex items-center justify-center">
+    <div class="absolute inset-0 bg-black/50" @click="showBatchModal = false"></div>
+    <div class="relative bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+      <h2 class="text-lg font-bold mb-4">Migrar {{ selectedBackups.size }} backup(s)</h2>
+      <p class="text-sm text-gray-600 mb-2">Origen: <strong>{{ regionLabel(backupRegion) }}</strong></p>
+      <p class="text-sm text-gray-600 mb-2">Region destino:</p>
+      <div class="flex gap-2 mb-4">
+        <button @click="batchTarget = 'buenosaires'" :class="batchTarget === 'buenosaires' ? 'bg-huawei-red text-white' : 'bg-gray-100 text-gray-600'" class="px-4 py-2 rounded-lg font-medium text-sm">Buenos Aires</button>
+        <button @click="batchTarget = 'santiago'" :class="batchTarget === 'santiago' ? 'bg-huawei-red text-white' : 'bg-gray-100 text-gray-600'" class="px-4 py-2 rounded-lg font-medium text-sm">Santiago</button>
+      </div>
+      <div class="flex justify-end gap-3">
+        <button @click="showBatchModal = false" class="px-4 py-2 rounded-lg font-medium bg-gray-200 text-gray-800">Cancelar</button>
+        <button @click="batchMigrate" :disabled="batchMigrating" class="px-4 py-2 rounded-lg font-medium bg-huawei-red text-white disabled:opacity-50">{{ batchMigrating ? 'Migrando...' : 'Confirmar' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SINGLE MIGRATE MODAL -->
+  <div v-if="singleMigrateBackup" class="fixed inset-0 z-50 flex items-center justify-center">
+    <div class="absolute inset-0 bg-black/50" @click="singleMigrateBackup = null"></div>
+    <div class="relative bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+      <h2 class="text-lg font-bold mb-4">Migrar backup</h2>
+      <p class="text-sm text-gray-600 mb-2">Backup: <strong>{{ singleMigrateBackup.name }}</strong> ({{ singleMigrateBackup.resource_size }} GB)</p>
+      <p class="text-sm text-gray-600 mb-2">Region destino:</p>
+      <div class="flex gap-2 mb-4">
+        <button @click="singleTarget = 'buenosaires'" :class="singleTarget === 'buenosaires' ? 'bg-huawei-red text-white' : 'bg-gray-100 text-gray-600'" class="px-4 py-2 rounded-lg font-medium text-sm">Buenos Aires</button>
+        <button @click="singleTarget = 'santiago'" :class="singleTarget === 'santiago' ? 'bg-huawei-red text-white' : 'bg-gray-100 text-gray-600'" class="px-4 py-2 rounded-lg font-medium text-sm">Santiago</button>
+      </div>
+      <div class="flex justify-end gap-3">
+        <button @click="singleMigrateBackup = null" class="px-4 py-2 rounded-lg font-medium bg-gray-200 text-gray-800">Cancelar</button>
+        <button @click="singleMigrate" :disabled="singleMigrating" class="px-4 py-2 rounded-lg font-medium bg-huawei-red text-white disabled:opacity-50">{{ singleMigrating ? 'Iniciando...' : 'Iniciar migracion' }}</button>
+      </div>
+    </div>
+  </div>
+  <!-- PROJECT IDS MODAL -->
+  <div v-if="showProjectSelect" class="fixed inset-0 z-50 flex items-center justify-center">
+    <div class="absolute inset-0 bg-black/50" @click="loggedIn ? showProjectSelect = false : null"></div>
+    <div class="relative bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6 space-y-4">
+      <h2 class="text-lg font-bold">Seleccionar Project IDs</h2>
+      <p class="text-sm text-gray-600">Selecciona el Project ID para cada region.</p>
+      <div v-if="projectsLoading" class="text-center py-4 text-gray-500">Cargando proyectos...</div>
+      <div v-else class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Buenos Aires (sa-argentina-1)</label>
+          <select v-model="creds.pid_ba" class="w-full px-3 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-huawei-blue focus:border-transparent outline-none">
+            <option value="">-- Seleccionar --</option>
+            <option v-for="p in projectsBA" :key="p.id" :value="p.id">{{ p.name }} ({{ p.id }})</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Santiago (la-south-2)</label>
+          <select v-model="creds.pid_cl" class="w-full px-3 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-huawei-blue focus:border-transparent outline-none">
+            <option value="">-- Seleccionar --</option>
+            <option v-for="p in projectsCL" :key="p.id" :value="p.id">{{ p.name }} ({{ p.id }})</option>
+          </select>
+        </div>
+        <div v-if="projectError" class="flex items-center gap-2 text-red-600 text-sm bg-red-50 p-3 rounded-lg">
+          <span>{{ projectError }}</span>
+        </div>
+        <div class="flex justify-end gap-3">
+          <button @click="showProjectSelect = false" class="px-4 py-2 rounded-lg font-medium bg-gray-200 text-gray-800">{{ loggedIn ? 'Cancelar' : 'Atras' }}</button>
+          <button @click="confirmProjects" :disabled="!creds.pid_ba || !creds.pid_cl" class="px-4 py-2 rounded-lg font-medium bg-huawei-red text-white disabled:opacity-50">Confirmar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const { createApp, ref, computed, onMounted, watch } = Vue;
+
+createApp({
+  setup() {
+    const loggedIn = ref(false);
+    const loginLoading = ref(false);
+    const loginError = ref(null);
+    const creds = ref({ ak: '', sk: '', pid_ba: '', pid_cl: '' });
+    const page = ref('dashboard');
+    const jobs = ref([]);
+    const jobsLoading = ref(false);
+    const backups = ref([]);
+    const backupsLoading = ref(false);
+    const backupError = ref(null);
+    const backupRegion = ref('buenosaires');
+    const selectedBackups = ref(new Set());
+    const showBatchModal = ref(false);
+    const batchTarget = ref('buenosaires');
+    const batchMigrating = ref(false);
+    const singleMigrateBackup = ref(null);
+    const singleTarget = ref('buenosaires');
+    const singleMigrating = ref(false);
+    const migrateMsg = ref(null);
+    const selectedJobData = ref(null);
+    const jobFilter = ref('all');
+    const showProjectSelect = ref(false);
+    const projectsLoading = ref(false);
+    const projectError = ref(null);
+    const projectsBA = ref([]);
+    const projectsCL = ref([]);
+
+    const navItems = [
+      { key: 'dashboard', label: 'Dashboard', icon: '◆' },
+      { key: 'backups', label: 'Backups', icon: '▣' },
+      { key: 'migrations', label: 'Migraciones', icon: '⇄' },
+    ];
+
+    const filters = [
+      { label: 'Todos', value: 'all' },
+      { label: 'Activos', value: 'active' },
+      { label: 'Completados', value: 'completed' },
+      { label: 'Fallidos', value: 'failed' },
+    ];
+
+    const activeJobs = computed(() => jobs.value.filter(j => j.step !== 'completed' && j.step !== 'failed'));
+    const completedJobs = computed(() => jobs.value.filter(j => j.step === 'completed'));
+    const failedJobs = computed(() => jobs.value.filter(j => j.step === 'failed'));
+    const recentJobs = computed(() => [...jobs.value].sort((a,b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 10));
+    const filteredJobs = computed(() => {
+      let f = jobs.value;
+      if (jobFilter.value === 'active') return f.filter(j => j.step !== 'completed' && j.step !== 'failed');
+      if (jobFilter.value === 'completed') return f.filter(j => j.step === 'completed');
+      if (jobFilter.value === 'failed') return f.filter(j => j.step === 'failed');
+      return [...f].sort((a,b) => new Date(b.updated_at) - new Date(a.updated_at));
+    });
+
+    function authHeaders() {
+      return {
+        'Content-Type': 'application/json',
+        'X-HW-AK': creds.value.ak,
+        'X-HW-SK': creds.value.sk,
+        'X-HW-Project-Id-BA': creds.value.pid_ba,
+        'X-HW-Project-Id-CL': creds.value.pid_cl,
+      };
+    }
+
+    async function apiCall(path, method = 'GET', body = null) {
+      const opts = { method, headers: authHeaders() };
+      if (body) opts.body = JSON.stringify(body);
+      const resp = await fetch(path, opts);
+      const text = await resp.text();
+      let data = null;
+      if (text) { try { data = JSON.parse(text); } catch { data = { error: text }; } }
+      if (!resp.ok) throw new Error(data?.detail || data?.error || `HTTP ${resp.status}`);
+      return data;
+    }
+
+    async function login() {
+      loginLoading.value = true;
+      loginError.value = null;
+      try {
+        const resp = await fetch('/api/auth/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ak: creds.value.ak, sk: creds.value.sk }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Invalid credentials');
+        let baList = [];
+        let clList = [];
+        try {
+          const [rba, rcl] = await Promise.all([
+            apiCall('/api/projects?name=sa-argentina-1'),
+            apiCall('/api/projects?name=la-south-2'),
+          ]);
+          baList = rba.projects || [];
+          clList = rcl.projects || [];
+        } catch (e) { console.error('Auto-detect projects:', e); }
+        if (baList.length >= 1 && clList.length >= 1) {
+          creds.value.pid_ba = baList[0].id;
+          creds.value.pid_cl = clList[0].id;
+          loggedIn.value = true;
+          fetchJobs();
+          return;
+        }
+        await fetchProjects();
+        showProjectSelect.value = true;
+      } catch (e) {
+        loginError.value = e.message;
+      } finally {
+        loginLoading.value = false;
+      }
+    }
+
+    async function fetchProjects() {
+      projectsLoading.value = true;
+      projectError.value = null;
+      try {
+        const data = await apiCall('/api/projects');
+        const all = data.projects || [];
+        projectsBA.value = all.filter(p => p.name && p.name.includes('sa-argentina-1'));
+        projectsCL.value = all.filter(p => p.name && p.name.includes('la-south-2'));
+        if (projectsBA.value.length === 0) projectsBA.value = all;
+        if (projectsCL.value.length === 0) projectsCL.value = all;
+      } catch (e) {
+        projectError.value = e.message;
+      } finally {
+        projectsLoading.value = false;
+      }
+    }
+
+    function confirmProjects() {
+      if (!creds.value.pid_ba || !creds.value.pid_cl) {
+        projectError.value = 'Selecciona ambos Project IDs';
+        return;
+      }
+      const firstLogin = !loggedIn.value;
+      showProjectSelect.value = false;
+      if (firstLogin) loggedIn.value = true;
+      fetchJobs();
+      fetchBackups();
+    }
+
+    function logout() {
+      loggedIn.value = false;
+      showProjectSelect.value = false;
+      creds.value = { ak: '', sk: '', pid_ba: '', pid_cl: '' };
+    }
+
+    async function fetchJobs() {
+      jobsLoading.value = true;
+      try {
+        const data = await apiCall('/api/jobs');
+        jobs.value = data.jobs || [];
+      } catch (e) { console.error(e); } finally { jobsLoading.value = false; }
+    }
+
+    async function fetchBackups() {
+      backupsLoading.value = true;
+      backupError.value = null;
+      try {
+        const data = await apiCall(`/api/backups?region=${backupRegion.value}`);
+        backups.value = data.backups || [];
+      } catch (e) { backupError.value = e.message; } finally { backupsLoading.value = false; }
+    }
+
+    function toggleBackup(id) {
+      const s = new Set(selectedBackups.value);
+      if (s.has(id)) s.delete(id); else s.add(id);
+      selectedBackups.value = s;
+    }
+
+    function toggleAllBackups() {
+      if (selectedBackups.value.size === backups.value.length) selectedBackups.value = new Set();
+      else selectedBackups.value = new Set(backups.value.map(b => b.id));
+    }
+
+    function openSingleMigrate(backup) {
+      singleMigrateBackup.value = backup;
+      singleTarget.value = backupRegion.value;
+    }
+
+    async function singleMigrate() {
+      singleMigrating.value = true;
+      migrateMsg.value = null;
+      try {
+        const r = await apiCall('/api/migrate', 'POST', {
+          backup_id: singleMigrateBackup.value.id,
+          source_region: backupRegion.value,
+          target_region: singleTarget.value,
+        });
+        migrateMsg.value = `Migracion iniciada. Job ID: ${r.job_id}`;
+        singleMigrateBackup.value = null;
+        fetchJobs();
+      } catch (e) { migrateMsg.value = `Error: ${e.message}`; } finally { singleMigrating.value = false; }
+    }
+
+    async function batchMigrate() {
+      batchMigrating.value = true;
+      migrateMsg.value = null;
+      const results = [];
+      for (const id of selectedBackups.value) {
+        try {
+          const r = await apiCall('/api/migrate', 'POST', {
+            backup_id: id, source_region: backupRegion.value, target_region: batchTarget.value,
+          });
+          results.push(`${id.slice(0,8)}: OK (${r.job_id.slice(0,8)})`);
+        } catch (e) { results.push(`${id.slice(0,8)}: ERROR`); }
+      }
+      migrateMsg.value = results.join('\n');
+      batchMigrating.value = false;
+      selectedBackups.value = new Set();
+      showBatchModal.value = false;
+      fetchJobs();
+    }
+
+    async function selectJob(jobId) {
+      page.value = 'jobDetail';
+      try {
+        const data = await apiCall(`/api/jobs/${jobId}`);
+        selectedJobData.value = data.job;
+      } catch (e) { console.error(e); }
+    }
+
+    async function retryJob(jobId) {
+      try {
+        await apiCall(`/api/jobs/${jobId}/retry`, 'POST');
+        if (page.value === 'jobDetail') selectJob(jobId);
+        fetchJobs();
+      } catch (e) { alert(`Error: ${e.message}`); }
+    }
+
+    async function deleteJob(jobId) {
+      if (!confirm('Eliminar este job?')) return;
+      try {
+        await apiCall(`/api/jobs/${jobId}`, 'DELETE');
+        fetchJobs();
+        if (page.value === 'jobDetail') page.value = 'migrations';
+      } catch (e) { alert(`Error: ${e.message}`); }
+    }
+
+    function regionLabel(r) {
+      return { buenosaires: 'Buenos Aires', santiago: 'Santiago', 'sa-argentina-1': 'Buenos Aires', 'la-south-2': 'Santiago' }[r] || r;
+    }
+
+    function statusLabel(s) {
+      return { replicating: 'Replicando', restoring: 'Restaurando', creating_image: 'Creando Imagen', exporting: 'Exportando', copying_obs: 'Copiando OBS', cleanup_pending: 'Limpieza', completed: 'Completado', failed: 'Fallido' }[s] || s;
+    }
+
+    function statusClass(s) {
+      return { replicating: 'bg-blue-100 text-blue-700', restoring: 'bg-blue-100 text-blue-700', creating_image: 'bg-blue-100 text-blue-700', exporting: 'bg-blue-100 text-blue-700', copying_obs: 'bg-blue-100 text-blue-700', cleanup_pending: 'bg-yellow-100 text-yellow-700', completed: 'bg-green-100 text-green-700', failed: 'bg-red-100 text-red-700' }[s] || 'bg-gray-100 text-gray-700';
+    }
+
+    function stepList(job) {
+      const all = ['replicating', 'restoring', 'creating_image', 'exporting', 'completed'];
+      return job?.cross_region ? all : all.filter(s => s !== 'replicating');
+    }
+
+    const STEP_ORDER = ['replicating', 'restoring', 'creating_image', 'exporting', 'copying_obs', 'cleanup_pending', 'completed'];
+
+    function isStepDone(job, step) {
+      if (job.step === 'failed') return false;
+      return STEP_ORDER.indexOf(step) < STEP_ORDER.indexOf(job.step);
+    }
+
+    function isStepCurrent(job, step) {
+      return STEP_ORDER.indexOf(step) === STEP_ORDER.indexOf(job.step);
+    }
+
+    function stepCircleClass(job, step, idx) {
+      if (isStepDone(job, step)) return 'bg-green-500 text-white';
+      if (isStepCurrent(job, step)) return job.step === 'failed' ? 'bg-red-500 text-white' : 'bg-blue-500 text-white';
+      return 'bg-gray-200 text-gray-500';
+    }
+
+    function timeAgo(iso) {
+      const diff = Date.now() - new Date(iso).getTime();
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'ahora';
+      if (mins < 60) return `${mins} min`;
+      const hours = Math.floor(mins / 60);
+      if (hours < 24) return `${hours}h`;
+      return `${Math.floor(hours / 24)}d`;
+    }
+
+    function formatDate(iso) { return new Date(iso).toLocaleDateString('es'); }
+    function formatDateTime(iso) { return new Date(iso).toLocaleString('es'); }
+
+    watch(page, (p) => {
+      if (p === 'backups') fetchBackups();
+      if (p === 'migrations' || p === 'dashboard') fetchJobs();
+    });
+
+    let pollTimer = null;
+    watch(activeJobs, (active) => {
+      if (active.length > 0 && !pollTimer) {
+        pollTimer = setInterval(fetchJobs, 10000);
+      } else if (active.length === 0 && pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    });
+
+    return {
+      loggedIn, loginLoading, loginError, creds, page, jobs, jobsLoading, backups, backupsLoading,
+      backupError, backupRegion, selectedBackups, showBatchModal, batchTarget, batchMigrating,
+      singleMigrateBackup, singleTarget, singleMigrating, migrateMsg, selectedJobData, jobFilter,
+      showProjectSelect, projectsLoading, projectError, projectsBA, projectsCL,
+      navItems, filters, activeJobs, completedJobs, failedJobs, recentJobs, filteredJobs,
+      login, logout, fetchProjects, confirmProjects, fetchJobs, fetchBackups, toggleBackup, toggleAllBackups, openSingleMigrate,
+      singleMigrate, batchMigrate, selectJob, retryJob, deleteJob,
+      regionLabel, statusLabel, statusClass, stepList, isStepDone, isStepCurrent, stepCircleClass,
+      timeAgo, formatDate, formatDateTime,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

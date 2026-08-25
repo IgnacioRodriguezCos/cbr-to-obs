@@ -1,0 +1,24 @@
+{
+  "buckets": {
+    "buenosaires": {
+      "name": "cbr-evs-buenosaires",
+      "region": "sa-argentina-1",
+      "purpose": "EVS disk backups migrated from CBR in Buenos Aires",
+      "object_prefix": "backups/",
+      "image_format": "vhd"
+    },
+    "santiago": {
+      "name": "cbr-evs-santiago",
+      "region": "la-south-2",
+      "purpose": "EVS disk backups migrated from CBR in Santiago",
+      "object_prefix": "backups/",
+      "image_format": "vhd"
+    }
+  },
+  "state_bucket": {
+    "name": "cbr-migration-state",
+    "region": "sa-argentina-1",
+    "purpose": "Stores migration job state JSON files",
+    "object_prefix": "state/"
+  }
+}
