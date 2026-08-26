@@ -226,8 +226,13 @@ async def migrate(req: MigrateRequest, request: Request):
         resource_size_gb=resource_size,
     )
 
+    if resource_size > config.raw_export_threshold_gb:
+        job["path"] = "raw"
+        config.get_temp_ecs_config(job["target_region"] if job["cross_region"] else req.source_region)
+
     job["bucket_name"] = get_bucket_name(target_region)
-    job["object_key"] = f"backups/{req.backup_id}/{backup_name}.vhd"
+    ext = "raw" if job["path"] == "raw" else "vhd"
+    job["object_key"] = f"backups/{req.backup_id}/{backup_name}.{ext}"
 
     if job["cross_region"]:
         target_vault_id = config.get_vault_id(target_region)

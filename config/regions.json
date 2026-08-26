@@ -9,7 +9,8 @@
         "evs": "evs.sa-argentina-1.myhuaweicloud.com",
         "ims": "ims.sa-argentina-1.myhuaweicloud.com",
         "obs": "obs.sa-argentina-1.myhuaweicloud.com",
-        "iam": "iam.sa-argentina-1.myhuaweicloud.com"
+        "iam": "iam.sa-argentina-1.myhuaweicloud.com",
+        "ecs": "ecs.sa-argentina-1.myhuaweicloud.com"
       },
       "availability_zones": ["sa-argentina-1a", "sa-argentina-1b"]
     },
@@ -22,7 +23,8 @@
         "evs": "evs.la-south-2.myhuaweicloud.com",
         "ims": "ims.la-south-2.myhuaweicloud.com",
         "obs": "obs.la-south-2.myhuaweicloud.com",
-        "iam": "iam.la-south-2.myhuaweicloud.com"
+        "iam": "iam.la-south-2.myhuaweicloud.com",
+        "ecs": "ecs.la-south-2.myhuaweicloud.com"
       },
       "availability_zones": ["la-south-2a", "la-south-2b"]
     }

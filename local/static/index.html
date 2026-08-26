@@ -577,27 +577,35 @@ createApp({
     }
 
     function statusLabel(s) {
-      return { replicating: 'Replicando', restoring: 'Restaurando', creating_image: 'Creando Imagen', exporting: 'Exportando', copying_obs: 'Copiando OBS', cleanup_pending: 'Limpieza', completed: 'Completado', failed: 'Fallido' }[s] || s;
+      return { replicating: 'Replicando', restoring: 'Restaurando', attaching_ecs: 'Adjuntando ECS', uploading_raw: 'Subiendo RAW a OBS', creating_image: 'Creando Imagen', exporting: 'Exportando', copying_obs: 'Copiando OBS', cleanup_pending: 'Limpieza', completed: 'Completado', failed: 'Fallido' }[s] || s;
     }
 
     function statusClass(s) {
-      return { replicating: 'bg-blue-100 text-blue-700', restoring: 'bg-blue-100 text-blue-700', creating_image: 'bg-blue-100 text-blue-700', exporting: 'bg-blue-100 text-blue-700', copying_obs: 'bg-blue-100 text-blue-700', cleanup_pending: 'bg-yellow-100 text-yellow-700', completed: 'bg-green-100 text-green-700', failed: 'bg-red-100 text-red-700' }[s] || 'bg-gray-100 text-gray-700';
+      return { replicating: 'bg-blue-100 text-blue-700', restoring: 'bg-blue-100 text-blue-700', attaching_ecs: 'bg-blue-100 text-blue-700', uploading_raw: 'bg-blue-100 text-blue-700', creating_image: 'bg-blue-100 text-blue-700', exporting: 'bg-blue-100 text-blue-700', copying_obs: 'bg-blue-100 text-blue-700', cleanup_pending: 'bg-yellow-100 text-yellow-700', completed: 'bg-green-100 text-green-700', failed: 'bg-red-100 text-red-700' }[s] || 'bg-gray-100 text-gray-700';
     }
 
     function stepList(job) {
-      const all = ['replicating', 'restoring', 'creating_image', 'exporting', 'completed'];
-      return job?.cross_region ? all : all.filter(s => s !== 'replicating');
+      const ims = ['replicating', 'restoring', 'creating_image', 'exporting', 'completed'];
+      const raw = ['replicating', 'restoring', 'attaching_ecs', 'uploading_raw', 'completed'];
+      if (job?.path === 'raw') return job?.cross_region ? raw : raw.filter(s => s !== 'replicating');
+      return job?.cross_region ? ims : ims.filter(s => s !== 'replicating');
     }
 
-    const STEP_ORDER = ['replicating', 'restoring', 'creating_image', 'exporting', 'copying_obs', 'cleanup_pending', 'completed'];
+    function stepOrder(job) {
+      return job?.path === 'raw'
+        ? ['replicating', 'restoring', 'attaching_ecs', 'uploading_raw', 'cleanup_pending', 'completed']
+        : ['replicating', 'restoring', 'creating_image', 'exporting', 'copying_obs', 'cleanup_pending', 'completed'];
+    }
 
     function isStepDone(job, step) {
       if (job.step === 'failed') return false;
-      return STEP_ORDER.indexOf(step) < STEP_ORDER.indexOf(job.step);
+      const order = stepOrder(job);
+      return order.indexOf(step) < order.indexOf(job.step);
     }
 
     function isStepCurrent(job, step) {
-      return STEP_ORDER.indexOf(step) === STEP_ORDER.indexOf(job.step);
+      const order = stepOrder(job);
+      return order.indexOf(step) === order.indexOf(job.step);
     }
 
     function stepCircleClass(job, step, idx) {

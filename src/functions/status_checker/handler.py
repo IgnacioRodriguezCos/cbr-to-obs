@@ -23,11 +23,15 @@ from src.shared.huawei_auth import HuaweiAuth
 from src.shared.cbr_client import CBRClient
 from src.shared.evs_client import EVSClient
 from src.shared.ims_client import IMSClient
+from src.shared.ecs_client import ECSClient
 from src.shared.obs_client import OBSClient
+from src.shared.raw_export import build_user_data, generate_password, marker_key
 from src.shared.regions import get_bucket_name
 from src.functions.orchestrator.job_model import (
     STEP_REPLICATING,
     STEP_RESTORING,
+    STEP_ATTACHING_ECS,
+    STEP_UPLOADING_RAW,
     STEP_CREATING_IMAGE,
     STEP_EXPORTING,
     STEP_COPYING_OBS,
@@ -59,6 +63,7 @@ def handler(event, context):
             "cbr": CBRClient(auth),
             "evs": EVSClient(auth),
             "ims": IMSClient(auth),
+            "ecs": ECSClient(auth),
             "obs": OBSClient(config.access_key, config.secret_key),
         }
 
@@ -127,6 +132,10 @@ def _process_job(job, clients, config):
         return _handle_replicating(job, clients, config)
     elif step == STEP_RESTORING:
         return _handle_restoring(job, clients, config)
+    elif step == STEP_ATTACHING_ECS:
+        return _handle_attaching_ecs(job, clients, config)
+    elif step == STEP_UPLOADING_RAW:
+        return _handle_uploading_raw(job, clients, config)
     elif step == STEP_CREATING_IMAGE:
         return _handle_creating_image(job, clients, config)
     elif step == STEP_EXPORTING:
@@ -196,6 +205,26 @@ def _handle_restoring(job, clients, config):
     status = evs.get_volume_status(region, job["volume_id"])
 
     if status == "available":
+        if job.get("path") == "raw":
+            ecs = clients["ecs"]
+            if not job.get("temp_server_id"):
+                user_data = build_user_data(job, config)
+                admin_pass = generate_password()
+                server_id = ecs.create_server(
+                    region,
+                    name=f"cbr-mig-{job['job_id'][:8]}",
+                    user_data=user_data,
+                    admin_pass=admin_pass,
+                )
+                update_step(
+                    job,
+                    STEP_ATTACHING_ECS,
+                    temp_server_id=server_id,
+                )
+                return "advanced"
+            update_step(job, STEP_ATTACHING_ECS)
+            return "advanced"
+
         image_result = evs.create_image_from_volume(
             region_input=region,
             volume_id=job["volume_id"],
@@ -206,6 +235,77 @@ def _handle_restoring(job, clients, config):
     elif status == "error":
         mark_failed(job, f"Volume creation failed. Volume ID: {job['volume_id']}")
         return "failed"
+
+    return "pending"
+
+
+def _handle_attaching_ecs(job, clients, config):
+    """Wait for temp ECS active and volume attached, then start raw upload watch.
+
+    Args:
+        job: Job state dict.
+        clients: Dict of API clients.
+        config: Config instance.
+
+    Returns:
+        'advanced' once volume is attached to the ECS,
+        'pending' while the ECS builds or attach is in progress.
+    """
+    ecs = clients["ecs"]
+
+    region = job["target_region"] if job["cross_region"] else job["source_region"]
+    server = ecs.get_server(region, job["temp_server_id"])
+    server_status = server.get("status", "")
+
+    if server_status == "ERROR":
+        mark_failed(job, f"Temp ECS entered ERROR state. Server ID: {job['temp_server_id']}")
+        return "failed"
+
+    if server_status != "ACTIVE":
+        return "pending"
+
+    attachment = ecs.get_attachment(region, job["temp_server_id"], job["volume_id"])
+    if attachment:
+        update_step(job, STEP_UPLOADING_RAW)
+        return "advanced"
+
+    if not job.get("attach_requested"):
+        ecs.attach_volume(
+            region,
+            job["temp_server_id"],
+            job["volume_id"],
+            device=job.get("temp_device", "/dev/vdb"),
+        )
+        job["attach_requested"] = True
+
+    return "pending"
+
+
+def _handle_uploading_raw(job, clients, config):
+    """Check for the raw upload success marker in OBS.
+
+    The temp ECS streams the raw disk with dd | obsutil and writes a
+    .SUCCESS marker object when done. This handler only polls for it.
+
+    Args:
+        job: Job state dict.
+        clients: Dict of API clients.
+        config: Config instance.
+
+    Returns:
+        'advanced'/'completed' when marker found, 'pending' otherwise.
+    """
+    obs = clients["obs"]
+
+    region = job["target_region"] if job["cross_region"] else job["source_region"]
+    exists = obs.object_exists(region, job["bucket_name"], marker_key(job["object_key"]))
+
+    if exists:
+        if config.cleanup_after_export:
+            update_step(job, STEP_CLEANUP_PENDING)
+            return "advanced"
+        update_step(job, STEP_COMPLETED)
+        return "completed"
 
     return "pending"
 

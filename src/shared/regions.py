@@ -13,6 +13,7 @@ REGIONS = {
             "ims": "ims.sa-argentina-1.myhuaweicloud.com",
             "obs": "obs.sa-argentina-1.myhuaweicloud.com",
             "iam": "iam.sa-argentina-1.myhuaweicloud.com",
+            "ecs": "ecs.sa-argentina-1.myhuaweicloud.com",
         },
     },
     "santiago": {
@@ -24,6 +25,7 @@ REGIONS = {
             "ims": "ims.la-south-2.myhuaweicloud.com",
             "obs": "obs.la-south-2.myhuaweicloud.com",
             "iam": "iam.la-south-2.myhuaweicloud.com",
+            "ecs": "ecs.la-south-2.myhuaweicloud.com",
         },
     },
 }

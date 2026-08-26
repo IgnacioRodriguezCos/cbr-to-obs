@@ -118,6 +118,37 @@ FunctionGraph tiene un tiempo maximo de ejecucion de 15 minutos. Las operaciones
 11. Resultado: archivo .vhd en bucket OBS de Santiago
 ```
 
+### Volumenes grandes (> 1TB) — Ruta Raw Export
+
+IMS tiene un limite de ~1TB para exportar imagenes. Para volumenes mayores
+(ej. 5TB), la herramienta usa una ruta alternativa sin IMS:
+
+```
+1. Restaurar backup a volumen EVS (igual que antes)
+2. Crear ECS temporal (Linux) con cloud-init que instala obsutil
+3. Adjuntar volumen al ECS como /dev/vdb
+4. Cloud-init ejecuta: dd if=/dev/vdb | obsutil cp - obs://bucket/key.raw
+5. Al terminar, sube un marker .SUCCESS al bucket
+6. [Status Checker] Detecta el marker -> avanza el job
+7. [Cleanup] Elimina ECS temporal y volumen
+8. Resultado: archivo .raw en bucket OBS (hasta 48.8TB)
+```
+
+Configuracion requerida (ver `.env.example`):
+
+| Variable | Descripcion |
+|---|---|
+| `RAW_EXPORT_THRESHOLD_GB` | Umbral para usar ruta raw (default: 1024) |
+| `TEMP_ECS_IMAGE_ID_BA/CL` | ID de imagen Linux (ej. Ubuntu 22.04) |
+| `TEMP_ECS_FLAVOR_BA/CL` | Flavor ECS (>=4GB RAM recomendado) |
+| `TEMP_ECS_NETWORK_ID_BA/CL` | ID de red/VPC |
+| `TEMP_RAW_PART_MB` | Tamano de parte multipart (default: 600) |
+| `TEMP_RAW_CONCURRENCY` | Subidas paralelas (default: 3) |
+
+> **Nota de seguridad**: El AK/SK se inyecta en el user-data del ECS temporal
+> (visible solo desde dentro de la instancia via metadata). Usar un sub-usuario
+> IAM con permisos restringidos. El ECS se elimina automaticamente al terminar.
+
 ---
 
 ## Prerrequisitos

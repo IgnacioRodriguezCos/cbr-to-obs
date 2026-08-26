@@ -8,6 +8,8 @@ import uuid
 
 STEP_REPLICATING = "replicating"
 STEP_RESTORING = "restoring"
+STEP_ATTACHING_ECS = "attaching_ecs"
+STEP_UPLOADING_RAW = "uploading_raw"
 STEP_CREATING_IMAGE = "creating_image"
 STEP_EXPORTING = "exporting"
 STEP_COPYING_OBS = "copying_obs"
@@ -18,6 +20,8 @@ STEP_CLEANUP_PENDING = "cleanup_pending"
 ACTIVE_STEPS = {
     STEP_REPLICATING,
     STEP_RESTORING,
+    STEP_ATTACHING_ECS,
+    STEP_UPLOADING_RAW,
     STEP_CREATING_IMAGE,
     STEP_EXPORTING,
     STEP_COPYING_OBS,
@@ -29,6 +33,14 @@ STEP_ORDER = [
     STEP_CREATING_IMAGE,
     STEP_EXPORTING,
     STEP_COPYING_OBS,
+    STEP_COMPLETED,
+]
+
+RAW_STEP_ORDER = [
+    STEP_REPLICATING,
+    STEP_RESTORING,
+    STEP_ATTACHING_ECS,
+    STEP_UPLOADING_RAW,
     STEP_COMPLETED,
 ]
 
@@ -61,6 +73,9 @@ def create_job(backup_id, backup_name, source_region, target_region, resource_si
         "target_region": target_region,
         "cross_region": cross_region,
         "step": initial_step,
+        "path": "ims",
+        "temp_server_id": None,
+        "temp_device": "/dev/vdb",
         "volume_id": None,
         "image_id": None,
         "export_job_id": None,

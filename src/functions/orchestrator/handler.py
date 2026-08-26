@@ -84,9 +84,14 @@ def handler(event, context):
             resource_size_gb=resource_size,
         )
 
+        if resource_size > config.raw_export_threshold_gb:
+            job["path"] = "raw"
+            config.get_temp_ecs_config(job["target_region"] if job["cross_region"] else source_region)
+
         target_bucket = get_bucket_name(target_region)
         job["bucket_name"] = target_bucket
-        job["object_key"] = f"backups/{backup_id}/{backup_name}.vhd"
+        ext = "raw" if job["path"] == "raw" else "vhd"
+        job["object_key"] = f"backups/{backup_id}/{backup_name}.{ext}"
 
         if job["cross_region"]:
             _start_replication(cbr, job, config)

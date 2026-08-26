@@ -27,6 +27,22 @@ class Config:
         self.cleanup_after_export = os.environ.get("CLEANUP_AFTER_EXPORT", "true").lower() == "true"
         self.max_retries = int(os.environ.get("MAX_RETRIES", "5"))
 
+        # Raw export path (volumes larger than IMS 1TB limit)
+        self.raw_export_threshold_gb = int(os.environ.get("RAW_EXPORT_THRESHOLD_GB", "1024"))
+        self.obsutil_url = os.environ.get(
+            "OBSUTIL_URL",
+            "https://obs-utils.obs.cn-north-4.myhuaweicloud.com/obsutil_latest_linux64.tar.gz",
+        )
+        self.raw_part_mb = int(os.environ.get("TEMP_RAW_PART_MB", "600"))
+        self.raw_concurrency = int(os.environ.get("TEMP_RAW_CONCURRENCY", "3"))
+        self.ecs_image_id_ba = os.environ.get("TEMP_ECS_IMAGE_ID_BA", "")
+        self.ecs_image_id_santiago = os.environ.get("TEMP_ECS_IMAGE_ID_CL", "")
+        self.ecs_flavor_ba = os.environ.get("TEMP_ECS_FLAVOR_BA", "")
+        self.ecs_flavor_santiago = os.environ.get("TEMP_ECS_FLAVOR_CL", "")
+        self.ecs_network_ba = os.environ.get("TEMP_ECS_NETWORK_ID_BA", "")
+        self.ecs_network_santiago = os.environ.get("TEMP_ECS_NETWORK_ID_CL", "")
+        self.ecs_keypair = os.environ.get("TEMP_ECS_KEYPAIR", "")
+
     def get_project_id(self, region_input):
         """Get project ID for a region.
 
@@ -88,6 +104,44 @@ class Config:
         if config["id"] == "sa-argentina-1":
             return self.temp_az_buenosaires
         return self.temp_az_santiago
+
+    def get_temp_ecs_config(self, region_input):
+        """Get temp ECS settings (image/flavor/network) for raw export in a region.
+
+        Args:
+            region_input: Region alias or ID.
+
+        Returns:
+            Dict with image_id, flavor_id, network_id.
+
+        Raises:
+            ValueError: If required ECS settings are missing for the region.
+        """
+        from .regions import get_region_config
+
+        config = get_region_config(region_input)
+        if config["id"] == "sa-argentina-1":
+            image_id = self.ecs_image_id_ba
+            flavor_id = self.ecs_flavor_ba
+            network_id = self.ecs_network_ba
+        else:
+            image_id = self.ecs_image_id_santiago
+            flavor_id = self.ecs_flavor_santiago
+            network_id = self.ecs_network_santiago
+
+        missing = []
+        if not image_id:
+            missing.append("TEMP_ECS_IMAGE_ID_BA/CL")
+        if not flavor_id:
+            missing.append("TEMP_ECS_FLAVOR_BA/CL")
+        if not network_id:
+            missing.append("TEMP_ECS_NETWORK_ID_BA/CL")
+        if missing:
+            raise ValueError(
+                f"Raw export path requires ECS settings for region {config['name']}. "
+                f"Missing env vars: {', '.join(missing)}"
+            )
+        return {"image_id": image_id, "flavor_id": flavor_id, "network_id": network_id}
 
     def validate(self):
         """Validate that required configuration is present.

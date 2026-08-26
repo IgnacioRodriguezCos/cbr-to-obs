@@ -15,6 +15,7 @@ from src.shared.config import load_config
 from src.shared.huawei_auth import HuaweiAuth
 from src.shared.evs_client import EVSClient
 from src.shared.ims_client import IMSClient
+from src.shared.ecs_client import ECSClient
 from src.shared.obs_client import OBSClient
 from src.functions.orchestrator.job_model import (
     STEP_CLEANUP_PENDING,
@@ -43,6 +44,7 @@ def handler(event, context):
         auth = HuaweiAuth(config.access_key, config.secret_key)
         evs = EVSClient(auth)
         ims = IMSClient(auth)
+        ecs = ECSClient(auth)
         obs = OBSClient(config.access_key, config.secret_key)
 
         jobs = obs.list_pending_jobs(config.state_region, config.state_bucket)
@@ -56,6 +58,13 @@ def handler(event, context):
 
             try:
                 region = job["target_region"] if job.get("cross_region") else job["source_region"]
+
+                if job.get("temp_server_id"):
+                    try:
+                        ecs.delete_server(region, job["temp_server_id"])
+                        logger.info(f"Deleted temp ECS {job['temp_server_id']} for job {job['job_id']}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete ECS {job['temp_server_id']}: {e}")
 
                 if job.get("volume_id"):
                     try:

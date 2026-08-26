@@ -109,13 +109,27 @@ class OBSClient:
         Args:
             region_input: Region alias or ID.
             bucket_name: Bucket name.
-            object_key: Object key.
+            object_key: Object key to delete.
 
         Returns:
-            True if successful, False otherwise.
+            True if successful (or already absent), False otherwise.
         """
         resp = self._do_request(region_input, bucket_name, "DELETE", object_key)
         return resp.status_code in (200, 204)
+
+    def object_exists(self, region_input, bucket_name, object_key):
+        """Check if an object exists in a bucket (HEAD request).
+
+        Args:
+            region_input: Region alias or ID.
+            bucket_name: Bucket name.
+            object_key: Object key.
+
+        Returns:
+            True if the object exists, False otherwise.
+        """
+        resp = self._do_request(region_input, bucket_name, "HEAD", object_key)
+        return resp.status_code == 200
 
     def list_objects(self, region_input, bucket_name, prefix=""):
         """List objects in a bucket with optional prefix.
