@@ -35,7 +35,7 @@ class CBRClient:
 
         headers = {"Content-Type": "application/json"}
         headers = self.auth.sign_request("GET", url, headers)
-        resp = requests.get(url, headers=headers, timeout=30)
+        resp = requests.get(url, headers=headers, timeout=30, verify=False)
         if not resp.ok:
             try:
                 err = resp.json()
@@ -57,7 +57,7 @@ class CBRClient:
 
         headers = {"Content-Type": "application/json"}
         headers = self.auth.sign_request("GET", url, headers)
-        resp = requests.get(url, headers=headers, timeout=30)
+        resp = requests.get(url, headers=headers, timeout=30, verify=False)
         resp.raise_for_status()
 
         return resp.json().get("backup", {})
@@ -78,7 +78,7 @@ class CBRClient:
 
         headers = {"Content-Type": "application/json"}
         headers = self.auth.sign_request("POST", url, headers, body_str)
-        resp = requests.post(url, headers=headers, data=body_str, timeout=30)
+        resp = requests.post(url, headers=headers, data=body_str, timeout=30, verify=False)
         resp.raise_for_status()
 
         return resp.status_code == 202
@@ -122,7 +122,7 @@ class CBRClient:
 
         headers = {"Content-Type": "application/json"}
         headers = self.auth.sign_request("POST", url, headers, body_str)
-        resp = requests.post(url, headers=headers, data=body_str, timeout=30)
+        resp = requests.post(url, headers=headers, data=body_str, timeout=30, verify=False)
         resp.raise_for_status()
 
         return resp.json().get("replication", {})

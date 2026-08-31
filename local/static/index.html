@@ -149,7 +149,7 @@
             </div>
             <table class="w-full">
               <thead><tr class="text-left text-sm text-gray-500 border-b border-gray-200">
-                <th class="pb-2 w-8"></th><th class="pb-2 font-medium">Nombre</th><th class="pb-2 font-medium">ID</th><th class="pb-2 font-medium">Tamano</th><th class="pb-2 font-medium">Estado</th><th class="pb-2 font-medium">Fecha</th><th class="pb-2"></th>
+                <th class="pb-2 w-8"></th><th class="pb-2 font-medium">Nombre</th><th class="pb-2 font-medium">ID</th><th class="pb-2 font-medium">Tamaño</th><th class="pb-2 font-medium">Estado</th><th class="pb-2 font-medium">Fecha</th><th class="pb-2"></th>
               </tr></thead>
               <tbody>
                 <tr v-for="b in backups" :key="b.id" class="hover:bg-gray-50 border-b border-gray-100">
@@ -176,12 +176,13 @@
         <div class="flex gap-2">
           <button v-for="f in filters" @click="jobFilter = f.value" :class="jobFilter === f.value ? 'bg-huawei-red text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'" class="px-4 py-2 rounded-lg font-medium text-sm">{{ f.label }}</button>
         </div>
+        <div v-if="jobsError" class="flex items-center gap-2 text-red-600 bg-red-50 p-4 rounded-lg"><span>{{ jobsError }}</span></div>
         <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <div v-if="jobsLoading" class="flex items-center justify-center py-12"><span class="animate-spin">⟳</span></div>
           <p v-else-if="filteredJobs.length === 0" class="text-gray-500 text-center py-12">No hay migraciones.</p>
           <table v-else class="w-full">
             <thead><tr class="text-left text-sm text-gray-500 border-b border-gray-200">
-              <th class="pb-2 font-medium">Backup</th><th class="pb-2 font-medium">Origen</th><th class="pb-2 font-medium">Destino</th><th class="pb-2 font-medium">Paso</th><th class="pb-2 font-medium">Tamano</th><th class="pb-2 font-medium">Actualizado</th><th class="pb-2 font-medium">Acciones</th>
+              <th class="pb-2 font-medium">Backup</th><th class="pb-2 font-medium">Origen</th><th class="pb-2 font-medium">Destino</th><th class="pb-2 font-medium">Paso</th><th class="pb-2 font-medium">Tamaño</th><th class="pb-2 font-medium">Actualizado</th><th class="pb-2 font-medium">Acciones</th>
             </tr></thead>
             <tbody>
               <tr v-for="job in filteredJobs" :key="job.job_id" class="hover:bg-gray-50 border-b border-gray-100">
@@ -235,7 +236,7 @@
                 <div class="flex justify-between"><dt class="text-gray-500">Origen</dt><dd>{{ regionLabel(selectedJobData.source_region) }}</dd></div>
                 <div class="flex justify-between"><dt class="text-gray-500">Destino</dt><dd>{{ regionLabel(selectedJobData.target_region) }}</dd></div>
                 <div class="flex justify-between"><dt class="text-gray-500">Cross-region</dt><dd>{{ selectedJobData.cross_region ? 'Si' : 'No' }}</dd></div>
-                <div class="flex justify-between"><dt class="text-gray-500">Tamano</dt><dd>{{ selectedJobData.resource_size_gb }} GB</dd></div>
+                <div class="flex justify-between"><dt class="text-gray-500">Tamaño</dt><dd>{{ selectedJobData.resource_size_gb }} GB</dd></div>
                 <div class="flex justify-between"><dt class="text-gray-500">Creado</dt><dd>{{ formatDateTime(selectedJobData.created_at) }}</dd></div>
                 <div class="flex justify-between"><dt class="text-gray-500">Actualizado</dt><dd>{{ formatDateTime(selectedJobData.updated_at) }}</dd></div>
                 <div class="flex justify-between"><dt class="text-gray-500">Reintentos</dt><dd>{{ selectedJobData.retry_count }}</dd></div>
@@ -342,6 +343,7 @@ createApp({
     const page = ref('dashboard');
     const jobs = ref([]);
     const jobsLoading = ref(false);
+    const jobsError = ref(null);
     const backups = ref([]);
     const backupsLoading = ref(false);
     const backupError = ref(null);
@@ -482,10 +484,11 @@ createApp({
 
     async function fetchJobs() {
       jobsLoading.value = true;
+      jobsError.value = null;
       try {
         const data = await apiCall('/api/jobs');
         jobs.value = data.jobs || [];
-      } catch (e) { console.error(e); } finally { jobsLoading.value = false; }
+      } catch (e) { jobsError.value = e.message; } finally { jobsLoading.value = false; }
     }
 
     async function fetchBackups() {
@@ -643,7 +646,7 @@ createApp({
     });
 
     return {
-      loggedIn, loginLoading, loginError, creds, page, jobs, jobsLoading, backups, backupsLoading,
+      loggedIn, loginLoading, loginError, creds, page, jobs, jobsLoading, jobsError, backups, backupsLoading,
       backupError, backupRegion, selectedBackups, showBatchModal, batchTarget, batchMigrating,
       singleMigrateBackup, singleTarget, singleMigrating, migrateMsg, selectedJobData, jobFilter,
       showProjectSelect, projectsLoading, projectError, projectsBA, projectsCL,

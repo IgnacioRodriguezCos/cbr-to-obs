@@ -14,6 +14,7 @@ REGIONS = {
             "obs": "obs.sa-argentina-1.myhuaweicloud.com",
             "iam": "iam.sa-argentina-1.myhuaweicloud.com",
             "ecs": "ecs.sa-argentina-1.myhuaweicloud.com",
+            "vpc": "vpc.sa-argentina-1.myhuaweicloud.com",
         },
     },
     "santiago": {
@@ -26,6 +27,7 @@ REGIONS = {
             "obs": "obs.la-south-2.myhuaweicloud.com",
             "iam": "iam.la-south-2.myhuaweicloud.com",
             "ecs": "ecs.la-south-2.myhuaweicloud.com",
+            "vpc": "vpc.la-south-2.myhuaweicloud.com",
         },
     },
 }

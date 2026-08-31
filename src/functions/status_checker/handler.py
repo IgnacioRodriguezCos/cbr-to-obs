@@ -142,6 +142,9 @@ def _process_job(job, clients, config):
         return _handle_exporting(job, clients, config)
     elif step == STEP_COPYING_OBS:
         return _handle_copying_obs(job, clients, config)
+    elif step == STEP_CLEANUP_PENDING:
+        return _handle_cleanup(job, clients, config)
+        return _handle_copying_obs(job, clients, config)
 
     return "pending"
 
@@ -225,12 +228,13 @@ def _handle_restoring(job, clients, config):
             update_step(job, STEP_ATTACHING_ECS)
             return "advanced"
 
-        image_result = evs.create_image_from_volume(
+        ims = clients["ims"]
+        image_job_id = ims.create_image_from_volume(
             region_input=region,
             volume_id=job["volume_id"],
-            image_name=f"cbr-mig-{job['job_id'][:8]}",
+            name=f"cbr-mig-{job['job_id'][:8]}",
         )
-        update_step(job, STEP_CREATING_IMAGE, image_id=image_result["image_id"])
+        update_step(job, STEP_CREATING_IMAGE, image_job_id=image_job_id)
         return "advanced"
     elif status == "error":
         mark_failed(job, f"Volume creation failed. Volume ID: {job['volume_id']}")
@@ -311,7 +315,10 @@ def _handle_uploading_raw(job, clients, config):
 
 
 def _handle_creating_image(job, clients, config):
-    """Check if IMS image is active, then start export to OBS.
+    """Check if IMS image creation job is complete, then export to OBS.
+
+    IMS create_image_from_volume is async: it returns a job_id. We poll
+    the job status. When SUCCESS, extract the image_id and start export.
 
     Args:
         job: Job state dict.
@@ -325,9 +332,28 @@ def _handle_creating_image(job, clients, config):
     ims = clients["ims"]
 
     region = job["target_region"] if job["cross_region"] else job["source_region"]
-    status = ims.get_image_status(region, job["image_id"])
 
-    if status == "active":
+    if not job.get("image_id"):
+        job_status = ims.get_job_status(region, job["image_job_id"])
+        status = job_status.get("status", "")
+
+        if status == "SUCCESS":
+            image_id = job_status.get("image_id", "")
+            if not image_id:
+                entities = job_status.get("entities", {})
+                image_id = entities.get("image_id", "")
+            if not image_id:
+                mark_failed(job, f"IMS job succeeded but no image_id found: {str(job_status)[:200]}")
+                return "failed"
+            job["image_id"] = image_id
+        elif status in ("FAIL", "FAILED"):
+            mark_failed(job, f"Image creation job failed. Job ID: {job['image_job_id']}")
+            return "failed"
+        else:
+            return "pending"
+
+    image_status = ims.get_image_status(region, job["image_id"])
+    if image_status == "active":
         export_job_id = ims.export_image_to_obs(
             region_input=region,
             image_id=job["image_id"],
@@ -336,7 +362,7 @@ def _handle_creating_image(job, clients, config):
         )
         update_step(job, STEP_EXPORTING, export_job_id=export_job_id)
         return "advanced"
-    elif status in ("killed", "error"):
+    elif image_status in ("killed", "error", "failed"):
         mark_failed(job, f"Image creation failed. Image ID: {job['image_id']}")
         return "failed"
 
@@ -386,5 +412,51 @@ def _handle_copying_obs(job, clients, config):
     Returns:
         'completed' if copy is done.
     """
+    update_step(job, STEP_COMPLETED)
+    return "completed"
+
+
+def _handle_cleanup(job, clients, config):
+    """Delete temporary resources (ECS, volume, image) and mark completed.
+
+    Args:
+        job: Job state dict.
+        clients: Dict of API clients.
+        config: Config instance.
+
+    Returns:
+        'completed' if cleanup succeeded.
+    """
+    region = job["target_region"] if job.get("cross_region") else job["source_region"]
+
+    if job.get("temp_server_id"):
+        try:
+            if job.get("volume_id"):
+                try:
+                    clients["ecs"].get_attachment(region, job["temp_server_id"], job["volume_id"])
+                    for att in clients["ecs"].list_volume_attachments(region, job["temp_server_id"]):
+                        if str(att.get("volumeId", "")).lower() == str(job["volume_id"]).lower():
+                            pass
+                except Exception:
+                    pass
+            clients["ecs"].delete_server(region, job["temp_server_id"])
+        except Exception as e:
+            logger.warning(f"Failed to delete ECS {job['temp_server_id']}: {e}")
+
+    import time
+    time.sleep(5)
+
+    if job.get("volume_id"):
+        try:
+            clients["evs"].delete_volume(region, job["volume_id"])
+        except Exception as e:
+            logger.warning(f"Failed to delete volume {job['volume_id']}: {e}")
+
+    if job.get("image_id"):
+        try:
+            clients["ims"].delete_image(region, job["image_id"])
+        except Exception as e:
+            logger.warning(f"Failed to delete image {job['image_id']}: {e}")
+
     update_step(job, STEP_COMPLETED)
     return "completed"

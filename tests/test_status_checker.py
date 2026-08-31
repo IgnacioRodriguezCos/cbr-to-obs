@@ -37,18 +37,18 @@ class TestHandleRestoring:
 
         mock_evs = MagicMock()
         mock_evs.get_volume_status.return_value = "available"
-        mock_evs.create_image_from_volume.return_value = {"image_id": "img-1", "location": ""}
 
         mock_ims = MagicMock()
-        clients = {"evs": mock_evs, "ims": mock_ims, "cbr": MagicMock(), "obs": MagicMock()}
+        mock_ims.create_image_from_volume.return_value = "ims-job-1"
+        clients = {"evs": mock_evs, "ims": mock_ims, "ecs": MagicMock(), "cbr": MagicMock(), "obs": MagicMock()}
         config = MagicMock()
-        config.temp_volume_type = "SATA"
+        config.temp_volume_type = "GPSSD"
 
         result = _handle_restoring(job, clients, config)
 
         assert result == "advanced"
         assert job["step"] == STEP_CREATING_IMAGE
-        assert job["image_id"] == "img-1"
+        assert job["image_job_id"] == "ims-job-1"
 
     def test_volume_creating_stays_pending(self):
         job = create_job("b1", "test", "buenosaires", "buenosaires")

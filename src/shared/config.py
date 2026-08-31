@@ -20,7 +20,7 @@ class Config:
         self.vault_id_santiago = os.environ.get("HW_VAULT_ID_SANTIAGO", "")
         self.state_bucket = os.environ.get("OBS_STATE_BUCKET", "cbr-migration-state")
         self.state_region = os.environ.get("OBS_STATE_REGION", "sa-argentina-1")
-        self.temp_volume_type = os.environ.get("TEMP_VOLUME_TYPE", "SATA")
+        self.temp_volume_type = os.environ.get("TEMP_VOLUME_TYPE", "GPSSD")
         self.temp_volume_size_gb = int(os.environ.get("TEMP_VOLUME_SIZE_GB", "0"))
         self.temp_az_buenosaires = os.environ.get("TEMP_AZ_BUENOSAIRES", "sa-argentina-1a")
         self.temp_az_santiago = os.environ.get("TEMP_AZ_SANTIAGO", "la-south-2a")
@@ -28,7 +28,7 @@ class Config:
         self.max_retries = int(os.environ.get("MAX_RETRIES", "5"))
 
         # Raw export path (volumes larger than IMS 1TB limit)
-        self.raw_export_threshold_gb = int(os.environ.get("RAW_EXPORT_THRESHOLD_GB", "1024"))
+        self.raw_export_threshold_gb = int(os.environ.get("RAW_EXPORT_THRESHOLD_GB", "0"))
         self.obsutil_url = os.environ.get(
             "OBSUTIL_URL",
             "https://obs-utils.obs.cn-north-4.myhuaweicloud.com/obsutil_latest_linux64.tar.gz",
@@ -41,6 +41,8 @@ class Config:
         self.ecs_flavor_santiago = os.environ.get("TEMP_ECS_FLAVOR_CL", "")
         self.ecs_network_ba = os.environ.get("TEMP_ECS_NETWORK_ID_BA", "")
         self.ecs_network_santiago = os.environ.get("TEMP_ECS_NETWORK_ID_CL", "")
+        self.ecs_vpc_ba = os.environ.get("TEMP_ECS_VPC_ID_BA", "")
+        self.ecs_vpc_santiago = os.environ.get("TEMP_ECS_VPC_ID_CL", "")
         self.ecs_keypair = os.environ.get("TEMP_ECS_KEYPAIR", "")
 
     def get_project_id(self, region_input):
@@ -124,10 +126,12 @@ class Config:
             image_id = self.ecs_image_id_ba
             flavor_id = self.ecs_flavor_ba
             network_id = self.ecs_network_ba
+            vpc_id = self.ecs_vpc_ba
         else:
             image_id = self.ecs_image_id_santiago
             flavor_id = self.ecs_flavor_santiago
             network_id = self.ecs_network_santiago
+            vpc_id = self.ecs_vpc_santiago
 
         missing = []
         if not image_id:
@@ -136,12 +140,14 @@ class Config:
             missing.append("TEMP_ECS_FLAVOR_BA/CL")
         if not network_id:
             missing.append("TEMP_ECS_NETWORK_ID_BA/CL")
+        if not vpc_id:
+            missing.append("TEMP_ECS_VPC_ID_BA/CL")
         if missing:
             raise ValueError(
                 f"Raw export path requires ECS settings for region {config['name']}. "
                 f"Missing env vars: {', '.join(missing)}"
             )
-        return {"image_id": image_id, "flavor_id": flavor_id, "network_id": network_id}
+        return {"image_id": image_id, "flavor_id": flavor_id, "network_id": network_id, "vpc_id": vpc_id}
 
     def validate(self):
         """Validate that required configuration is present.

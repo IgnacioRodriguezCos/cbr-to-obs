@@ -75,6 +75,10 @@ def handler(event, context):
 
         backup_name = backup.get("name", backup_id)
         resource_size = backup.get("resource_size", 0)
+        if not resource_size:
+            size_mb = backup.get("size", 0)
+            if size_mb:
+                resource_size = size_mb / 1024
 
         job = create_job(
             backup_id=backup_id,

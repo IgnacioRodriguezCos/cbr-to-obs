@@ -62,8 +62,22 @@ class OBSClient:
             headers=signed_headers,
             data=body if body else None,
             timeout=60,
+            verify=False,
         )
         return resp
+
+    def ensure_bucket(self, region_input, bucket_name):
+        """Create a bucket if it doesn't exist.
+
+        Args:
+            region_input: Region alias or ID.
+            bucket_name: Bucket to create.
+
+        Returns:
+            True if bucket exists or was created, False otherwise.
+        """
+        resp = self._do_request(region_input, bucket_name, "PUT", "")
+        return resp.status_code in (200, 201, 204, 409)
 
     def put_object(self, region_input, bucket_name, object_key, data, content_type="application/json"):
         """Upload an object to OBS.
@@ -169,7 +183,7 @@ class OBSClient:
             payload=b"",
         )
         url = f"https://{url_host}/?{query}"
-        resp = requests.get(url, headers=signed_headers, timeout=60)
+        resp = requests.get(url, headers=signed_headers, timeout=60, verify=False)
 
         if resp.status_code != 200:
             return []
@@ -307,7 +321,7 @@ class OBSClient:
                 region_id=region_id,
                 payload=b"",
             )
-            resp = requests.put(url, headers=signed_headers, timeout=120)
+            resp = requests.put(url, headers=signed_headers, timeout=120, verify=False)
             return resp.status_code in (200, 201)
 
         data = self.get_object(source_region, source_bucket, source_key)

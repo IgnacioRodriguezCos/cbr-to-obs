@@ -50,10 +50,25 @@ class EVSClient:
 
         headers = {"Content-Type": "application/json"}
         headers = self.auth.sign_request("POST", url, headers, body_str)
-        resp = requests.post(url, headers=headers, data=body_str, timeout=30)
-        resp.raise_for_status()
+        resp = requests.post(url, headers=headers, data=body_str, timeout=30, verify=False)
+        if not resp.ok:
+            try:
+                err = resp.json()
+                msg = err.get("message") or err.get("error_msg") or str(err)[:300]
+            except Exception:
+                msg = resp.text[:300]
+            raise RuntimeError(f"EVS API error {resp.status_code}: {msg}")
 
-        return resp.json().get("volume", {}).get("id", "")
+        data = resp.json()
+        volume_id = data.get("volume", {}).get("id", "")
+        if not volume_id:
+            volume_ids = data.get("volume_ids", [])
+            if volume_ids:
+                volume_id = volume_ids[0]
+        if not volume_id:
+            raise RuntimeError(f"EVS create volume response has no volume id: {str(data)[:300]}")
+
+        return volume_id
 
     def get_volume(self, region_input, volume_id):
         """Get volume details including status."""
@@ -66,7 +81,7 @@ class EVSClient:
 
         headers = {"Content-Type": "application/json"}
         headers = self.auth.sign_request("GET", url, headers)
-        resp = requests.get(url, headers=headers, timeout=30)
+        resp = requests.get(url, headers=headers, timeout=30, verify=False)
         resp.raise_for_status()
 
         return resp.json().get("volume", {})
@@ -96,14 +111,24 @@ class EVSClient:
                 "image_name": image_name,
                 "image_description": description,
                 "force": True,
+                "image_metadata": {
+                    "__os_type": "Linux",
+                    "__image_source_type": "instance",
+                },
             }
         }
         body_str = json.dumps(body)
 
         headers = {"Content-Type": "application/json"}
         headers = self.auth.sign_request("POST", url, headers, body_str)
-        resp = requests.post(url, headers=headers, data=body_str, timeout=30)
-        resp.raise_for_status()
+        resp = requests.post(url, headers=headers, data=body_str, timeout=30, verify=False)
+        if not resp.ok:
+            try:
+                err = resp.json()
+                msg = err.get("message") or err.get("error_msg") or str(err)[:300]
+            except Exception:
+                msg = resp.text[:300]
+            raise RuntimeError(f"EVS image creation error {resp.status_code}: {msg}")
 
         data = resp.json()
         image_info = data.get("os-volume_upload_image", {})
@@ -123,5 +148,5 @@ class EVSClient:
 
         headers = {"Content-Type": "application/json"}
         headers = self.auth.sign_request("DELETE", url, headers)
-        resp = requests.delete(url, headers=headers, timeout=30)
+        resp = requests.delete(url, headers=headers, timeout=30, verify=False)
         return resp.status_code in (200, 202, 204)

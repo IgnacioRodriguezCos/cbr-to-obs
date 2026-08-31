@@ -9,6 +9,9 @@ venv/
 # Environment / secrets
 .env
 
+# Local job state
+local/state/
+
 # Node / frontend
 node_modules/
 frontend/dist/

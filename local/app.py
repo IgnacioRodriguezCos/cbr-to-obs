@@ -20,6 +20,9 @@ import threading
 
 import requests
 
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi import FastAPI, Request, HTTPException
@@ -31,6 +34,7 @@ from src.shared.huawei_auth import HuaweiAuth
 from src.shared.cbr_client import CBRClient
 from src.shared.evs_client import EVSClient
 from src.shared.ims_client import IMSClient
+from src.shared.ecs_client import ECSClient
 from src.shared.obs_client import OBSClient
 from src.shared.config import Config
 from src.shared.regions import get_bucket_name
@@ -38,6 +42,7 @@ from src.functions.orchestrator.job_model import (
     create_job,
     update_step,
     mark_failed,
+    is_active,
     STEP_RESTORING,
     STEP_REPLICATING,
 )
@@ -45,6 +50,7 @@ from src.functions.orchestrator.job_model import (
 app = FastAPI(title="CBR-to-OBS Migration")
 
 HTML_PATH = os.path.join(os.path.dirname(__file__), "static", "index.html")
+STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
 
 
 @app.exception_handler(Exception)
@@ -53,6 +59,42 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
     traceback.print_exc()
     return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+def _save_job_local(job_id, state):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(os.path.join(STATE_DIR, f"{job_id}.json"), "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+
+
+def _load_job_local(job_id):
+    path = os.path.join(STATE_DIR, f"{job_id}.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _list_jobs_local():
+    if not os.path.exists(STATE_DIR):
+        return []
+    jobs = []
+    for fn in os.listdir(STATE_DIR):
+        if fn.endswith(".json"):
+            try:
+                with open(os.path.join(STATE_DIR, fn), "r", encoding="utf-8") as f:
+                    jobs.append(json.load(f))
+            except (json.JSONDecodeError, IOError):
+                pass
+    return jobs
+
+
+def _delete_job_local(job_id):
+    path = os.path.join(STATE_DIR, f"{job_id}.json")
+    if os.path.exists(path):
+        os.remove(path)
+        return True
+    return False
 
 
 class Credentials(BaseModel):
@@ -94,6 +136,7 @@ def _get_clients_from_headers(request: Request):
         "cbr": CBRClient(auth),
         "evs": EVSClient(auth),
         "ims": IMSClient(auth),
+        "ecs": ECSClient(auth),
         "obs": OBSClient(ak, sk),
         "config": Config(),
     }
@@ -112,7 +155,7 @@ async def validate_auth(req: LoginRequest):
         url = "https://iam.myhuaweicloud.com/v3/projects"
         headers = {"Content-Type": "application/json"}
         headers = auth.sign_request("GET", url, headers)
-        resp = requests.get(url, headers=headers, timeout=30)
+        resp = requests.get(url, headers=headers, timeout=30, verify=False)
         if not resp.ok:
             try:
                 err = resp.json()
@@ -138,7 +181,7 @@ async def list_projects(request: Request, name: str | None = None):
             url += f"?name={quote(name)}"
         headers = {"Content-Type": "application/json"}
         headers = auth.sign_request("GET", url, headers)
-        resp = requests.get(url, headers=headers, timeout=30)
+        resp = requests.get(url, headers=headers, timeout=30, verify=False)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -177,19 +220,30 @@ async def get_backup(backup_id: str, request: Request, region: str = "buenosaire
 
 @app.get("/api/jobs")
 async def list_jobs(request: Request):
-    clients = _get_clients_from_headers(request)
-    jobs = clients["obs"].list_pending_jobs(
-        clients["config"].state_region, clients["config"].state_bucket
-    )
-    return {"jobs": jobs, "count": len(jobs)}
+    try:
+        clients = _get_clients_from_headers(request)
+        from src.functions.status_checker.handler import _process_job
+
+        jobs = _list_jobs_local()
+        for job in jobs:
+            if not is_active(job):
+                continue
+            try:
+                _process_job(job, clients, clients["config"])
+                _save_job_local(job["job_id"], job)
+            except Exception as e:
+                mark_failed(job, str(e))
+                _save_job_local(job["job_id"], job)
+
+        jobs = _list_jobs_local()
+        return {"jobs": jobs, "count": len(jobs)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str, request: Request):
-    clients = _get_clients_from_headers(request)
-    job = clients["obs"].load_job_state(
-        clients["config"].state_region, clients["config"].state_bucket, job_id
-    )
+    job = _load_job_local(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"job": job}
@@ -217,6 +271,10 @@ async def migrate(req: MigrateRequest, request: Request):
 
     backup_name = backup.get("name", req.backup_id)
     resource_size = backup.get("resource_size", 0)
+    if not resource_size:
+        size_mb = backup.get("size", 0)
+        if size_mb:
+            resource_size = size_mb / 1024
 
     job = create_job(
         backup_id=req.backup_id,
@@ -228,7 +286,18 @@ async def migrate(req: MigrateRequest, request: Request):
 
     if resource_size > config.raw_export_threshold_gb:
         job["path"] = "raw"
-        config.get_temp_ecs_config(job["target_region"] if job["cross_region"] else req.source_region)
+        try:
+            config.get_temp_ecs_config(job["target_region"] if job["cross_region"] else req.source_region)
+        except ValueError:
+            ecs = clients["ecs"]
+            detect_region = job["target_region"] if job["cross_region"] else req.source_region
+            detected = ecs.auto_detect_config(detect_region)
+            from src.shared.regions import get_region_config
+            suffix = "BA" if get_region_config(detect_region)["id"] == "sa-argentina-1" else "CL"
+            os.environ[f"TEMP_ECS_IMAGE_ID_{suffix}"] = detected["image_id"]
+            os.environ[f"TEMP_ECS_FLAVOR_{suffix}"] = detected["flavor_id"]
+            os.environ[f"TEMP_ECS_NETWORK_ID_{suffix}"] = detected["network_id"]
+            os.environ[f"TEMP_ECS_VPC_ID_{suffix}"] = detected["vpc_id"]
 
     job["bucket_name"] = get_bucket_name(target_region)
     ext = "raw" if job["path"] == "raw" else "vhd"
@@ -254,18 +323,16 @@ async def migrate(req: MigrateRequest, request: Request):
         )
         job["volume_id"] = volume_id
 
-    obs.save_job_state(config.state_region, config.state_bucket, job["job_id"], job)
+    obs.ensure_bucket(target_region, job["bucket_name"])
+
+    _save_job_local(job["job_id"], job)
 
     return {"job_id": job["job_id"], "step": job["step"], "message": "Migration started"}
 
 
 @app.post("/api/jobs/{job_id}/retry")
 async def retry_job(job_id: str, request: Request):
-    clients = _get_clients_from_headers(request)
-    obs = clients["obs"]
-    config = clients["config"]
-
-    job = obs.load_job_state(config.state_region, config.state_bucket, job_id)
+    job = _load_job_local(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -275,20 +342,22 @@ async def retry_job(job_id: str, request: Request):
     job["step"] = STEP_RESTORING if not job.get("cross_region") else STEP_REPLICATING
     job["error"] = None
     job["retry_count"] = job.get("retry_count", 0) + 1
+    job["volume_id"] = None
+    job["image_id"] = None
+    job["image_job_id"] = None
+    job["export_job_id"] = None
+    job["temp_server_id"] = None
+    job["attach_requested"] = False
     import datetime
     job["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
 
-    obs.save_job_state(config.state_region, config.state_bucket, job_id, job)
+    _save_job_local(job_id, job)
     return {"job_id": job_id, "step": job["step"], "message": "Job retry initiated"}
 
 
 @app.delete("/api/jobs/{job_id}")
 async def delete_job(job_id: str, request: Request):
-    clients = _get_clients_from_headers(request)
-    obs = clients["obs"]
-    config = clients["config"]
-
-    deleted = obs.delete_job_state(config.state_region, config.state_bucket, job_id)
+    deleted = _delete_job_local(job_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"message": "Job deleted"}

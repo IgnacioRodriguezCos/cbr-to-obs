@@ -149,10 +149,23 @@ def sign_obs_request(
 
     payload_hash = headers["x-amz-content-sha256"]
 
+    canonical_query = ""
+    if "?" in url:
+        raw_query = url.split("?", 1)[1]
+        pairs = []
+        for pair in raw_query.split("&"):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                pairs.append((quote(k, safe=""), quote(v, safe="")))
+            else:
+                pairs.append((quote(pair, safe=""), ""))
+        pairs.sort()
+        canonical_query = "&".join(f"{k}={v}" for k, v in pairs)
+
     canonical_request = (
         f"{method.upper()}\n"
         f"{canonical_uri}\n"
-        f"\n"
+        f"{canonical_query}\n"
         f"{canonical_headers}\n"
         f"{signed_headers}\n"
         f"{payload_hash}"

@@ -25,6 +25,7 @@ ACTIVE_STEPS = {
     STEP_CREATING_IMAGE,
     STEP_EXPORTING,
     STEP_COPYING_OBS,
+    STEP_CLEANUP_PENDING,
 }
 
 STEP_ORDER = [
@@ -78,6 +79,7 @@ def create_job(backup_id, backup_name, source_region, target_region, resource_si
         "temp_device": "/dev/vdb",
         "volume_id": None,
         "image_id": None,
+        "image_job_id": None,
         "export_job_id": None,
         "replication_record_id": None,
         "destination_backup_id": None,
