@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CBR → OBS Pipeline</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config = { darkMode: 'class' }</script>
+<script>if (localStorage.getItem('dark_mode') === 'true') document.documentElement.classList.add('dark');</script>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<style>
+  [v-cloak] { display: none; }
+  body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+  .fade-enter-active, .fade-leave-active { transition: opacity .3s; }
+  .fade-enter, .fade-leave-to { opacity: 0; }
+  @keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.4); } 50% { box-shadow: 0 0 0 6px rgba(239,68,68,0); } }
+  .pulse-glow { animation: pulse-glow 2s infinite; }
+  @keyframes slide-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .slide-in { animation: slide-in .3s ease-out; }
+  @keyframes tour-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.5); } 50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); } }
+  .tour-highlight { position: relative; z-index: 9999; box-shadow: 0 0 0 9999px rgba(0,0,0,0.55); border-radius: 12px; animation: tour-pulse 1.5s infinite; }
+  .tour-tooltip { position: fixed; z-index: 10000; max-width: 380px; }
+  .dark .bg-white { background-color: rgb(30 41 59) !important; }
+  .dark .bg-slate-50 { background-color: rgb(51 65 85) !important; }
+  .dark .bg-slate-100 { background-color: rgb(30 41 59) !important; }
+  .dark .text-slate-800 { color: rgb(226 232 240) !important; }
+  .dark .text-slate-700 { color: rgb(203 213 225) !important; }
+  .dark .text-slate-600 { color: rgb(148 163 184) !important; }
+  .dark .text-slate-500 { color: rgb(148 163 184) !important; }
+  .dark .text-slate-400 { color: rgb(100 116 139) !important; }
+  .dark .border-slate-200 { border-color: rgb(51 65 85) !important; }
+  .dark .border-slate-100 { border-color: rgb(51 65 85) !important; }
+  .dark .border-slate-50 { border-color: rgb(51 65 85) !important; }
+  .dark .border-gray-200 { border-color: rgb(51 65 85) !important; }
+  .dark .border-gray-100 { border-color: rgb(51 65 85) !important; }
+  .dark .border-gray-50 { border-color: rgb(51 65 85) !important; }
+  .dark .hover\:bg-slate-50:hover { background-color: rgb(51 65 85) !important; }
+  .dark .hover\:bg-gray-50:hover { background-color: rgb(51 65 85) !important; }
+  .dark .bg-red-50 { background-color: rgb(127 29 29 / 0.2) !important; }
+  .dark .bg-amber-50 { background-color: rgb(120 53 15 / 0.2) !important; }
+  .dark .border-red-100 { border-color: rgb(127 29 29) !important; }
+  .dark .border-amber-200 { border-color: rgb(120 53 15) !important; }
+  .dark input, .dark select { color: rgb(226 232 240) !important; }
+  .dark input::placeholder { color: rgb(100 116 139) !important; }
+  .dark select option { background-color: rgb(30 41 59) !important; }
+</style>
+</head>
+<body class="bg-slate-100 dark:bg-slate-950">
+<div id="app" v-cloak>
+
+  <!-- LOGIN -->
+  <div v-if="!loggedIn" class="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-red-900">
+    <div class="w-full max-w-md mx-4">
+      <div class="text-center mb-8">
+        <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-red-500 mb-4 shadow-lg shadow-red-500/30">
+          <svg class="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10c0 2 3 3 8 3s8-1 8-3V7M4 7c0 2 3 3 8 3s8-1 8-3M4 7c0-2 3-3 8-3s8 1 8 3m0 5c0 2-3 3-8 3s-8-1-8-3"/></svg>
+        </div>
+        <h1 class="text-2xl font-bold text-white">CBR → OBS Pipeline</h1>
+        <p class="text-slate-400 mt-1 text-sm">Huawei Cloud Backup Migration</p>
+      </div>
+      <form @submit.prevent="login" class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl p-8 space-y-5">
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-2 uppercase tracking-wide">Access Key</label>
+          <input v-model="ak" type="text" class="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-red-500 focus:border-transparent outline-none transition" placeholder="AKXXXXXXXX..." required>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-2 uppercase tracking-wide">Secret Key</label>
+          <input v-model="sk" type="password" class="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-red-500 focus:border-transparent outline-none transition" placeholder="sk-xxxx..." required>
+        </div>
+        <div v-if="loginError" class="text-red-600 text-sm bg-red-50 dark:bg-red-900/20 p-3 rounded-xl border border-red-100 dark:border-red-800">{{ loginError }}</div>
+        <button type="submit" :disabled="loginLoading" class="w-full px-4 py-3 rounded-xl font-semibold bg-gradient-to-r from-red-600 to-red-500 text-white hover:from-red-700 hover:to-red-600 disabled:opacity-50 transition shadow-lg shadow-red-500/20">
+          {{ loginLoading ? 'Validando...' : 'Ingresar' }}
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div v-else class="min-h-screen">
+    <header class="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 flex items-center justify-between sticky top-0 z-10 shadow-sm">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shadow-sm">
+          <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10c0 2 3 3 8 3s8-1 8-3V7M4 7c0 2 3 3 8 3s8-1 8-3M4 7c0-2 3-3 8-3s8 1 8 3m0 5c0 2-3 3-8 3s-8-1-8-3"/></svg>
+        </div>
+        <h1 class="text-base font-bold text-slate-800 dark:text-slate-200">CBR → OBS</h1>
+      </div>
+      <div class="flex items-center gap-3">
+        <div class="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1" data-tour="region-selector">
+          <button v-for="r in regions" :key="r.id" @click="selectRegion(r.id)"
+            :class="region === r.id ? 'bg-white dark:bg-slate-700 text-red-600 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
+            class="px-3 py-1.5 font-medium text-sm rounded-lg transition">{{ r.name }}</button>
+        </div>
+        <div class="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1" data-tour="tabs">
+          <button @click="tab = 'vaults'; fetchVaults()" :class="tab === 'vaults' ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'" class="px-3 py-1.5 font-medium text-sm rounded-lg transition">Vaults</button>
+          <button @click="tab = 'volumes'; fetchVolumes()" :class="tab === 'volumes' ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'" class="px-3 py-1.5 font-medium text-sm rounded-lg transition">Discos</button>
+          <button @click="tab = 'pipeline'; initPipeline()" :class="tab === 'pipeline' ? 'bg-white dark:bg-slate-700 text-red-600 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'" class="px-3 py-1.5 font-medium text-sm rounded-lg transition">Pipeline</button>
+        </div>
+        <button @click="startTour" class="text-sm text-red-500 hover:text-red-700 transition px-2 flex items-center gap-1" title="Tour interactivo">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 0a4 4 0 00-5.656 0M12 7a5 5 0 00-5 5m10-5a5 5 0 015 5"/></svg>
+          Tour
+        </button>
+        <button @click="toggleDark" class="text-sm text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 transition px-2" title="Modo oscuro">
+          <svg v-if="!darkMode" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9 9 0 008.354-5.646z"/></svg>
+          <svg v-else class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+        </button>
+        <button @click="logout" class="text-sm text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 transition px-2">Salir</button>
+      </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto p-6">
+      <!-- VAULTS -->
+      <div v-if="tab === 'vaults'">
+        <div v-if="loading" class="text-center py-16 text-slate-400">
+          <div class="inline-block w-8 h-8 border-2 border-slate-300 border-t-red-500 rounded-full animate-spin mb-3"></div>
+          <p>Cargando vaults...</p>
+        </div>
+        <div v-else-if="error" class="bg-red-50 text-red-600 p-4 rounded-xl border border-red-100">{{ error }}</div>
+        <div v-else-if="vaults.length === 0" class="text-center py-16 text-slate-400">
+          <svg class="w-12 h-12 mx-auto mb-3 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+          <p>No hay vaults en esta region.</p>
+        </div>
+        <div v-else class="space-y-4">
+          <div v-for="v in vaults" :key="v.id" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-md transition slide-in">
+            <div class="flex items-start justify-between mb-4">
+              <div>
+                <h2 class="text-lg font-bold text-slate-800">{{ v.name || 'Sin nombre' }}</h2>
+                <p class="text-xs text-slate-400 font-mono mt-0.5">{{ v.id }}</p>
+              </div>
+              <span :class="v.status === 'available' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'" class="px-3 py-1 rounded-full text-xs font-semibold">{{ v.status || '?' }}</span>
+            </div>
+            <div class="grid grid-cols-3 gap-4 mb-4">
+              <div class="bg-slate-50 rounded-xl p-3"><p class="text-xs text-slate-400 mb-1">Capacidad</p><p class="text-sm font-bold text-slate-700">{{ v.size || 0 }} GB</p></div>
+              <div class="bg-slate-50 rounded-xl p-3"><p class="text-xs text-slate-400 mb-1">Usado</p><p class="text-sm font-bold text-slate-700">{{ v.used || 0 }} GB</p></div>
+              <div class="bg-slate-50 rounded-xl p-3"><p class="text-xs text-slate-400 mb-1">Recursos</p><p class="text-sm font-bold text-slate-700">{{ v.resources.length }}</p></div>
+            </div>
+            <div v-if="v.resources.length > 0" class="border-t border-slate-100 pt-3">
+              <table class="w-full text-sm">
+                <thead><tr class="text-left text-slate-400"><th class="pb-2 font-medium">Nombre</th><th class="pb-2 font-medium">Tipo</th><th class="pb-2 font-medium">Tamaño</th><th class="pb-2 font-medium">Estado</th></tr></thead>
+                <tbody>
+                  <tr v-for="r in v.resources" :key="r.id" class="border-t border-slate-50 hover:bg-slate-50 transition"><td class="py-2">{{ r.name || r.id.slice(0, 8) }}</td><td class="py-2 text-slate-500">{{ r.type || '-' }}</td><td class="py-2 text-slate-500">{{ r.size || 0 }} GB</td><td class="py-2"><span :class="r.protect_status === 'available' ? 'text-emerald-600' : 'text-slate-400'" class="font-medium">{{ r.protect_status || '-' }}</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- VOLUMES -->
+      <div v-if="tab === 'volumes'">
+        <div v-if="volLoading" class="text-center py-16 text-slate-400">
+          <div class="inline-block w-8 h-8 border-2 border-slate-300 border-t-red-500 rounded-full animate-spin mb-3"></div>
+          <p>Cargando discos...</p>
+        </div>
+        <div v-else-if="volError" class="bg-red-50 text-red-600 p-4 rounded-xl border border-red-100">{{ volError }}</div>
+        <div v-else-if="volumes.length === 0" class="text-center py-16 text-slate-400">
+          <p>No hay discos EVS en esta region.</p>
+        </div>
+        <div v-else class="space-y-3">
+          <div v-for="v in volumes" :key="v.id" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 hover:shadow-md transition slide-in">
+            <div class="flex items-start justify-between">
+              <div>
+                <h2 class="text-base font-bold text-slate-800">{{ v.name || 'Sin nombre' }}</h2>
+                <p class="text-xs text-slate-400 font-mono mt-0.5">{{ v.id }}</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <span v-if="v.bootable === 'true'" class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded-lg text-xs font-medium">Bootable</span>
+                <span :class="{'bg-emerald-100 text-emerald-700': v.status === 'available', 'bg-amber-100 text-amber-700': v.status === 'in-use', 'bg-red-100 text-red-700': v.status === 'error'}" class="px-3 py-1 rounded-full text-xs font-semibold">{{ v.status }}</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-4 gap-3 mt-3">
+              <div class="bg-slate-50 rounded-lg p-2.5"><p class="text-xs text-slate-400">Tamaño</p><p class="text-sm font-bold text-slate-700">{{ v.size }} GB</p></div>
+              <div class="bg-slate-50 rounded-lg p-2.5"><p class="text-xs text-slate-400">Tipo</p><p class="text-sm font-bold text-slate-700">{{ v.volume_type || '-' }}</p></div>
+              <div class="bg-slate-50 rounded-lg p-2.5"><p class="text-xs text-slate-400">AZ</p><p class="text-sm font-bold text-slate-700">{{ v.availability_zone || '-' }}</p></div>
+              <div class="bg-slate-50 rounded-lg p-2.5"><p class="text-xs text-slate-400">Adjunto</p><p class="text-sm font-bold text-slate-700">{{ v.attachments.length > 0 ? v.attachments[0].server_id.slice(0, 8) + '...' : 'No' }}</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PIPELINE -->
+      <div v-if="tab === 'pipeline'" class="space-y-6">
+        <!-- Config form -->
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 slide-in" data-tour="pipeline-config">
+          <div class="flex items-center gap-2 mb-5">
+            <svg class="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
+            <h2 class="text-lg font-bold text-slate-800">Configuración del Pipeline</h2>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">Región (CBR + OBS)</label>
+              <select v-model="pipe.sourceRegion" @change="pipe.targetRegion = pipe.sourceRegion; pipe.bucketName = ''; discoveredBackups = []; selectedBackupIds = []; fetchBuckets()" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50 outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent transition">
+                <option v-for="r in regions" :key="r.id" :value="r.id">{{ r.name }} ({{ r.id }})</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">Bucket OBS destino</label>
+              <select v-model="pipe.bucketName" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50 outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent transition">
+                <option value="">Seleccionar bucket...</option>
+                <option v-for="b in obsBuckets" :key="b.name" :value="b.name">{{ b.name }} ({{ b.location }})</option>
+              </select>
+              <p class="text-xs text-amber-600 mt-1.5 flex items-center gap-1">
+                <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                El bucket debe existir previamente y tener cross-region activado.
+              </p>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">Prefijo en bucket</label>
+              <input v-model="pipe.bucketPrefix" type="text" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50 outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent transition" placeholder="backups">
+            </div>
+          </div>
+
+          <!-- Action buttons -->
+          <div class="mt-5 flex gap-3" data-tour="pipeline-actions">
+            <button @click="discoverBackups" :disabled="pipeDiscovering" class="px-5 py-2.5 rounded-xl font-semibold bg-slate-700 text-white hover:bg-slate-800 disabled:opacity-50 transition flex items-center gap-2">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+              {{ pipeDiscovering ? 'Buscando...' : 'Descubrir Backups' }}
+            </button>
+            <button @click="runPipeline" :disabled="pipeStatus.running || selectedBackupIds.length === 0 || !pipe.bucketName"
+              class="px-5 py-2.5 rounded-xl font-semibold bg-gradient-to-r from-red-600 to-red-500 text-white hover:from-red-700 hover:to-red-600 disabled:opacity-50 transition shadow-lg shadow-red-500/20 flex items-center gap-2">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              Ejecutar ({{ selectedBackupIds.length }})
+            </button>
+            <button v-if="pipeStatus.running" @click="stopPipeline" class="px-5 py-2.5 rounded-xl font-semibold bg-amber-500 text-white hover:bg-amber-600 transition flex items-center gap-2">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              Detener
+            </button>
+            <button v-if="!pipeStatus.running && pipeStatus.status !== 'idle' && pipeStatus.status !== 'starting'" @click="resetPipeline" class="px-5 py-2.5 rounded-xl font-semibold bg-slate-600 text-white hover:bg-slate-700 transition flex items-center gap-2">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0A8.003 8.003 0 0015.418 21M15 15v5m0 0h5"/></svg>
+              Reiniciar
+            </button>
+          </div>
+          <div v-if="pipeError" class="mt-3 text-red-600 text-sm bg-red-50 p-3 rounded-xl border border-red-100">{{ pipeError }}</div>
+        </div>
+
+        <!-- Discovered backups -->
+        <div v-if="discoveredBackups.length > 0" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 slide-in" data-tour="backup-selection">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-bold text-slate-800">Backups descubiertos <span class="text-slate-400 font-normal">({{ discoveredBackups.length }})</span></h2>
+            <div class="flex gap-2 items-center">
+              <div class="relative">
+                <svg class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                <input v-model="backupSearch" type="text" placeholder="Buscar por nombre..." class="pl-9 pr-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-sm outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent transition w-52">
+              </div>
+              <button @click="selectAllBackups" class="text-xs px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium transition">Todos</button>
+              <button @click="deselectAllBackups" class="text-xs px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium transition">Ninguno</button>
+              <span class="text-xs text-slate-500 font-medium ml-1">{{ selectedBackupIds.length }} sel.</span>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-slate-400 border-b border-slate-100">
+                <th class="pb-3 font-medium w-8"></th><th class="pb-3 font-medium">Nombre</th><th class="pb-3 font-medium">Size</th><th class="pb-3 font-medium">AZ</th><th class="pb-3 font-medium">Backup ID</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="b in filteredBackups" :key="b.backup_id" @click="selectedBackupIds.includes(b.backup_id) ? selectedBackupIds.splice(selectedBackupIds.indexOf(b.backup_id), 1) : selectedBackupIds.push(b.backup_id)" class="border-b border-slate-50 hover:bg-slate-50 transition cursor-pointer" :class="selectedBackupIds.includes(b.backup_id) ? 'bg-red-50/40' : ''">
+                  <td class="py-2.5"><input type="checkbox" :value="b.backup_id" v-model="selectedBackupIds" @click.stop class="rounded border-slate-300 text-red-500 focus:ring-red-500"></td>
+                  <td class="py-2.5 font-medium text-slate-700">{{ b.name }}</td><td class="py-2.5 text-slate-500">{{ b.resource_size_gb }} GB</td>
+                  <td class="py-2.5 text-slate-500">{{ b.resource_az || '-' }}</td><td class="py-2.5 font-mono text-xs text-slate-400">{{ b.backup_id.slice(0, 12) }}...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Progress -->
+        <div v-if="pipeStatus.status !== 'idle' && pipeStatus.status !== 'starting'" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 slide-in" data-tour="pipeline-progress">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-bold text-slate-800">Progreso del Pipeline</h2>
+            <span :class="{
+              'bg-emerald-100 text-emerald-700': pipeStatus.status === 'completed',
+              'bg-blue-100 text-blue-700': pipeStatus.status === 'running',
+              'bg-red-100 text-red-700': pipeStatus.status === 'failed',
+              'bg-amber-100 text-amber-700': pipeStatus.status === 'stopping',
+            }" class="px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wide">{{ pipeStatus.status }}</span>
+          </div>
+
+          <!-- Progress bar -->
+          <div v-if="pipeStatus.total > 0" class="mb-5">
+            <div class="flex justify-between text-sm text-slate-600 mb-1.5">
+              <span class="font-medium">{{ pipeStatus.processed }} / {{ pipeStatus.total }} procesados</span>
+              <span v-if="pipeStatus.current_backup" class="text-slate-400">Actual: {{ pipeStatus.current_backup.name }}</span>
+            </div>
+            <div class="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
+              <div :class="pipeStatus.status === 'completed' ? 'bg-gradient-to-r from-emerald-500 to-emerald-600' : 'bg-gradient-to-r from-red-500 to-red-600'" class="h-2.5 rounded-full transition-all duration-500" :style="{ width: (pipeStatus.total ? (pipeStatus.processed / pipeStatus.total * 100) : 0) + '%' }"></div>
+            </div>
+          </div>
+
+          <!-- Results table -->
+          <div v-if="pipeStatus.results.length > 0" class="mb-5">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-slate-400 border-b border-slate-100">
+                <th class="pb-3 font-medium">Backup</th><th class="pb-3 font-medium">Estado</th><th class="pb-3 font-medium">Object Key</th><th class="pb-3 font-medium">Error</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="r in pipeStatus.results" :key="r.backup_id" class="border-b border-slate-50 hover:bg-slate-50 transition">
+                  <td class="py-2.5 font-medium text-slate-700">{{ r.backup_name }}</td>
+                  <td class="py-2.5">
+                    <span v-if="r.exported" class="inline-flex items-center gap-1 text-emerald-600 font-semibold"><svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg> OK</span>
+                    <span v-else class="inline-flex items-center gap-1 text-red-600 font-semibold"><svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/></svg> FAIL</span>
+                  </td>
+                  <td class="py-2.5 font-mono text-xs text-slate-500">{{ r.object_key || '-' }}</td>
+                  <td class="py-2.5 text-xs text-red-500 max-w-xs truncate">{{ r.error || '' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Logs -->
+          <div>
+            <h3 class="text-xs font-semibold text-slate-500 mb-2 uppercase tracking-wide flex items-center gap-2">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              Logs en vivo
+            </h3>
+            <div class="bg-slate-900 rounded-xl p-4 max-h-96 overflow-y-auto font-mono text-xs leading-relaxed">
+              <div v-for="(log, i) in pipeStatus.logs" :key="i" class="mb-0.5 flex gap-2">
+                <span class="text-slate-600 shrink-0">{{ log.time }}</span>
+                <span :class="{
+                  'text-red-400': log.level === 'ERROR',
+                  'text-amber-400': log.level === 'WARNING',
+                  'text-emerald-400': log.level === 'INFO',
+                  'text-slate-300': log.level === 'DEBUG',
+                }">{{ log.msg }}</span>
+              </div>
+              <div v-if="pipeStatus.logs.length === 0" class="text-slate-600">Esperando logs...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- TOUR OVERLAY -->
+  <div v-if="tourActive" class="fixed inset-0 z-[9998]" @click.self="nextTourStep">
+    <div v-if="tourHighlightEl" class="tour-highlight" :style="tourHighlightStyle"></div>
+    <div class="tour-tooltip bg-white rounded-2xl shadow-2xl p-6" :style="tourTooltipStyle">
+      <div class="flex items-center gap-2 mb-3">
+        <div class="w-7 h-7 rounded-lg bg-red-500 flex items-center justify-center text-white text-sm font-bold">{{ tourStepIndex + 1 }}</div>
+        <h3 class="text-base font-bold text-slate-800">{{ tourSteps[tourStepIndex].title }}</h3>
+      </div>
+      <p class="text-sm text-slate-600 leading-relaxed mb-4" v-html="tourSteps[tourStepIndex].desc"></p>
+      <div class="flex items-center justify-between">
+        <button @click="stopTour" class="text-sm text-slate-400 hover:text-slate-600 transition">Saltar tour</button>
+        <div class="flex gap-2">
+          <button v-if="tourStepIndex > 0" @click="prevTourStep" class="px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-100 hover:bg-slate-200 text-slate-600 transition">Atrás</button>
+          <button @click="nextTourStep" class="px-4 py-1.5 rounded-lg text-sm font-semibold bg-red-500 text-white hover:bg-red-600 transition">
+            {{ tourStepIndex < tourSteps.length - 1 ? 'Siguiente' : 'Entendido!' }}
+          </button>
+        </div>
+      </div>
+      <div class="mt-3 flex gap-1">
+        <div v-for="(s, i) in tourSteps" :key="i" @click="goTourStep(i)" :class="i === tourStepIndex ? 'bg-red-500' : 'bg-slate-200 hover:bg-slate-300'" class="w-2 h-2 rounded-full cursor-pointer transition"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const { createApp, ref, computed } = Vue;
+
+createApp({
+  setup() {
+    const loggedIn = ref(false);
+    const loginLoading = ref(false);
+    const loginError = ref(null);
+    const ak = ref('');
+    const sk = ref('');
+    const regions = ref([]);
+    const region = ref('la-south-2');
+    const tab = ref('vaults');
+    const vaults = ref([]);
+    const loading = ref(false);
+    const error = ref(null);
+    const volumes = ref([]);
+    const volLoading = ref(false);
+    const volError = ref(null);
+
+    // Pipeline state
+    const pipe = ref({
+      sourceRegion: 'la-south-2',
+      targetRegion: 'la-south-2',
+      vaultId: '',
+      bucketName: '',
+      bucketPrefix: 'backups',
+      agencyName: '',
+      targetProjectName: '',
+      backupNameFilter: '',
+    });
+    const discoveredBackups = ref([]);
+    const pipeDiscovering = ref(false);
+    const pipeError = ref(null);
+    const pipeStatus = ref({ status: 'idle', running: false, total: 0, processed: 0, current_backup: null, results: [], logs: [], error: null });
+    const obsBuckets = ref([]);
+    const selectedBackupIds = ref([]);
+    const backupSearch = ref('');
+    const filteredBackups = computed(() => {
+      if (!backupSearch.value) return discoveredBackups.value;
+      const q = backupSearch.value.toLowerCase();
+      return discoveredBackups.value.filter(b => (b.name || '').toLowerCase().includes(q));
+    });
+    const darkMode = ref(document.documentElement.classList.contains('dark'));
+    let pipePollTimer = null;
+
+    function toggleDark() {
+      darkMode.value = !darkMode.value;
+      if (darkMode.value) {
+        document.documentElement.classList.add('dark');
+        localStorage.setItem('dark_mode', 'true');
+      } else {
+        document.documentElement.classList.remove('dark');
+        localStorage.setItem('dark_mode', 'false');
+      }
+    }
+
+    function headers() {
+      return { 'Content-Type': 'application/json', 'X-AK': ak.value, 'X-SK': sk.value };
+    }
+
+    async function apiCall(path) {
+      const resp = await fetch(path, { headers: headers() });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      return data;
+    }
+
+    async function login() {
+      loginLoading.value = true;
+      loginError.value = null;
+      try {
+        const resp = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ak: ak.value, sk: sk.value }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Invalid');
+        const regData = await fetch('/api/regions').then(r => r.json());
+        regions.value = regData.regions;
+        loggedIn.value = true;
+        fetchVaults();
+        if (!localStorage.getItem('tour_done')) {
+          setTimeout(startTour, 500);
+        }
+      } catch (e) {
+        loginError.value = e.message;
+      } finally {
+        loginLoading.value = false;
+      }
+    }
+
+    function logout() {
+      loggedIn.value = false;
+      ak.value = '';
+      sk.value = '';
+    }
+
+    function selectRegion(r) {
+      region.value = r;
+      if (tab.value === 'vaults') fetchVaults();
+      else fetchVolumes();
+    }
+
+    async function fetchVaults() {
+      loading.value = true;
+      error.value = null;
+      try {
+        const data = await apiCall(`/api/vaults?region=${region.value}`);
+        vaults.value = data.vaults || [];
+      } catch (e) {
+        error.value = e.message;
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    async function fetchVolumes() {
+      volLoading.value = true;
+      volError.value = null;
+      try {
+        const data = await apiCall(`/api/volumes?region=${region.value}`);
+        volumes.value = data.volumes || [];
+      } catch (e) {
+        volError.value = e.message;
+      } finally {
+        volLoading.value = false;
+      }
+    }
+
+    function initPipeline() {
+      pipe.value.sourceRegion = region.value;
+      pipe.value.targetRegion = region.value;
+      fetchBuckets();
+      pollPipelineStatus();
+    }
+
+    async function fetchBuckets() {
+      obsBuckets.value = [];
+      try {
+        const data = await apiCall(`/api/buckets?region=${pipe.value.targetRegion}`);
+        obsBuckets.value = data.buckets || [];
+      } catch (e) {
+        pipeError.value = 'Error cargando buckets: ' + e.message;
+      }
+    }
+
+    function selectAllBackups() {
+      selectedBackupIds.value = discoveredBackups.value.map(b => b.backup_id);
+    }
+
+    function deselectAllBackups() {
+      selectedBackupIds.value = [];
+    }
+
+    async function discoverBackups() {
+      pipeDiscovering.value = true;
+      pipeError.value = null;
+      selectedBackupIds.value = [];
+      try {
+        const params = new URLSearchParams({ region: pipe.value.sourceRegion });
+        if (pipe.value.vaultId) params.set('vault_id', pipe.value.vaultId);
+        const data = await apiCall(`/api/backups?${params}`);
+        discoveredBackups.value = data.backups || [];
+      } catch (e) {
+        pipeError.value = e.message;
+      } finally {
+        pipeDiscovering.value = false;
+      }
+    }
+
+    async function runPipeline() {
+      pipeError.value = null;
+      try {
+        const resp = await fetch('/api/pipeline/run', {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({
+            source_region: pipe.value.sourceRegion,
+            target_region: pipe.value.targetRegion,
+            vault_id: pipe.value.vaultId || null,
+            bucket_name: pipe.value.bucketName,
+            bucket_prefix: pipe.value.bucketPrefix,
+            agency_name: pipe.value.agencyName || null,
+            target_project_name: pipe.value.targetProjectName || null,
+            backup_name_filter: pipe.value.backupNameFilter || null,
+            selected_backup_ids: selectedBackupIds.value,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Failed to start');
+        pipeStatus.value = { status: 'starting', running: true, total: 0, processed: 0, current_backup: null, results: [], logs: [], error: null };
+        pollPipelineStatus();
+      } catch (e) {
+        pipeError.value = e.message;
+      }
+    }
+
+    async function stopPipeline() {
+      try {
+        await fetch('/api/pipeline/stop', { method: 'POST', headers: headers() });
+      } catch (e) { /* ignore */ }
+    }
+
+    function resetPipeline() {
+      pipeStatus.value = { status: 'idle', running: false, total: 0, processed: 0, current_backup: null, results: [], logs: [], error: null };
+      selectedBackupIds.value = [];
+      pipeError.value = null;
+    }
+
+    async function pollPipelineStatus() {
+      if (pipePollTimer) clearTimeout(pipePollTimer);
+      try {
+        const resp = await fetch('/api/pipeline/status', { headers: headers() });
+        const data = await resp.json();
+        pipeStatus.value = data;
+      } catch (e) { /* ignore */ }
+      if (pipeStatus.value.running || pipeStatus.value.status === 'starting') {
+        pipePollTimer = setTimeout(pollPipelineStatus, 2000);
+      }
+    }
+
+    // Tour state
+    const tourActive = ref(false);
+    const tourStepIndex = ref(0);
+    const tourHighlightStyle = ref({});
+    const tourTooltipStyle = ref({});
+    const tourSteps = [
+      { title: 'Bienvenido al Pipeline CBR → OBS', desc: 'Esta herramienta migra backups de discos EVS desde CBR a un bucket OBS. Creará una ECS temporal, restaurará el disco, generará una imagen y la exportará. <br><br><b>Te llevaremos por un tour de 30 segundos.</b>' },
+      { title: 'Selector de región', desc: 'Cambiá entre regiones de Huawei Cloud. Los vaults y discos que ves pertenecen a la región seleccionada.', target: 'region-selector' },
+      { title: 'Pestañas de navegación', desc: '<b>Vaults</b>: ver backups de CBR.<br><b>Discos</b>: ver volúmenes EVS.<br><b>Pipeline</b>: ejecutar la migración de backups a OBS.', target: 'tabs', action: () => { tab.value = 'pipeline'; initPipeline(); } },
+      { title: 'Configuración del pipeline', desc: 'Elegí la <b>región origen</b> (donde están los backups) y la <b>región destino</b> (donde está el bucket OBS). También seleccioná el bucket y podés filtrar por vault o nombre.', target: 'pipeline-config' },
+      { title: 'Descubrir y ejecutar', desc: '1. Click en <b>Descubrir Backups</b> para listar los backups disponibles.<br>2. Seleccioná los que querés migrar con los checkboxes.<br>3. Click en <b>Ejecutar</b> para iniciar el pipeline.', target: 'pipeline-actions' },
+      { title: 'Selección de backups', desc: ' Después de descubrir los backups, marcá los que querés migrar. Podés usar <b>Todos</b> o <b>Ninguno</b> para seleccionar rápido.', target: 'backup-selection' },
+      { title: 'Progreso en vivo', desc: 'Durante la ejecución verás: barra de progreso, tabla de resultados (OK/FAIL por backup) y logs en tiempo real con colores por nivel.', target: 'pipeline-progress' },
+      { title: 'Listo!', desc: 'El pipeline automáticamente:<br>1. Restaura el backup a un volumen<br>2. Crea una ECS y attacha el disco<br>3. Genera una imagen desde la ECS<br>4. Exporta a OBS (fast export zvhd2)<br>5. <b>Limpia todos los recursos temporales</b><br><br>El backup CBR original queda intacto.' },
+    ];
+
+    function startTour() {
+      tourStepIndex.value = 0;
+      tourActive.value = true;
+      updateTourPosition();
+    }
+
+    function stopTour() {
+      tourActive.value = false;
+      localStorage.setItem('tour_done', '1');
+    }
+
+    function nextTourStep() {
+      if (tourStepIndex.value < tourSteps.length - 1) {
+        tourStepIndex.value++;
+        const step = tourSteps[tourStepIndex.value];
+        if (step.action) step.action();
+        setTimeout(updateTourPosition, 100);
+      } else {
+        stopTour();
+      }
+    }
+
+    function prevTourStep() {
+      if (tourStepIndex.value > 0) {
+        tourStepIndex.value--;
+        const step = tourSteps[tourStepIndex.value];
+        if (step.action) step.action();
+        setTimeout(updateTourPosition, 100);
+      }
+    }
+
+    function goTourStep(i) {
+      tourStepIndex.value = i;
+      const step = tourSteps[i];
+      if (step.action) step.action();
+      setTimeout(updateTourPosition, 100);
+    }
+
+    function updateTourPosition() {
+      const step = tourSteps[tourStepIndex.value];
+      if (!step.target) {
+        tourHighlightStyle.value = {};
+        tourTooltipStyle.value = { top: '50%', left: '50%', transform: 'translate(-50%, -50%)' };
+        return;
+      }
+      const el = document.querySelector(`[data-tour="${step.target}"]`);
+      if (!el) {
+        tourHighlightStyle.value = {};
+        tourTooltipStyle.value = { top: '50%', left: '50%', transform: 'translate(-50%, -50%)' };
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      tourHighlightStyle.value = {
+        top: (rect.top - 4) + 'px',
+        left: (rect.left - 4) + 'px',
+        width: (rect.width + 8) + 'px',
+        height: (rect.height + 8) + 'px',
+      };
+      const tooltipTop = rect.bottom + 16;
+      const tooltipLeft = rect.left + rect.width / 2;
+      const winW = window.innerWidth;
+      const winH = window.innerHeight;
+      let top = tooltipTop;
+      let left = tooltipLeft;
+      let transform = 'translateX(-50%)';
+      if (top + 250 > winH) { top = rect.top - 280; }
+      if (left - 190 < 0) { left = 20; transform = 'none'; }
+      if (left + 190 > winW) { left = winW - 400; transform = 'none'; }
+      tourTooltipStyle.value = { top: top + 'px', left: left + 'px', transform };
+    }
+
+    return { loggedIn, loginLoading, loginError, ak, sk, regions, region, tab, vaults, loading, error,
+             volumes, volLoading, volError,
+             pipe, discoveredBackups, pipeDiscovering, pipeError, pipeStatus, obsBuckets, selectedBackupIds,
+             login, logout, selectRegion, fetchVaults, fetchVolumes,
+              initPipeline, discoverBackups, runPipeline, stopPipeline, resetPipeline, pollPipelineStatus, fetchBuckets,
+              selectAllBackups, deselectAllBackups,
+             backupSearch, filteredBackups,
+             darkMode, toggleDark,
+             tourActive, tourStepIndex, tourSteps, tourHighlightStyle, tourTooltipStyle,
+             startTour, stopTour, nextTourStep, prevTourStep, goTourStep };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
