@@ -351,6 +351,7 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                     image_id = create_image(
                         ims_src, image_name,
                         volume_id=volume_id,
+                        expected_os_type=os_type,
                         poll_interval=config.poll_interval_seconds,
                         poll_timeout=config.poll_timeout_seconds,
                     )
