@@ -28,6 +28,10 @@ def create_image(
 
     If instance_id is provided, creates from the ECS instance.
     Otherwise creates a data disk image from the volume.
+
+    Note: for data disk images the volume MUST be attached to an ECS —
+    IMS derives the OS type from the owning ECS. There is no os_type
+    parameter in this flow (os_version is only valid for system disk images).
     """
     unique_name = f"{image_name}-{uuid.uuid4().hex[:6]}"
 
@@ -38,14 +42,14 @@ def create_image(
             instance_id=instance_id,
         )
     else:
-        logger.info("Creating image '%s' from volume %s", unique_name, volume_id)
+        logger.info("Creating data disk image '%s' from volume %s", unique_name, volume_id)
         data_image = CreateDataImage(
             name=unique_name,
             volume_id=volume_id,
             description=f"Data disk image from volume {volume_id}",
         )
         body = CreateImageRequestBody(
-            name=unique_name,
+            name=f"{unique_name}-root",
             data_images=[data_image],
         )
 

@@ -145,6 +145,7 @@ class PipelineRunRequest(BaseModel):
     target_project_name: str | None = None
     backup_name_filter: str | None = None
     selected_backup_ids: list[str] = []
+    os_type: str = "Windows"
     poll_interval_seconds: int = 15
     poll_timeout_seconds: int = 3600
 
@@ -226,6 +227,9 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
         logging.info("Pipeline iniciado: %s -> %s (cross=%s)",
                      config.source_region, config.target_region, config.is_cross_region)
 
+        os_type = "Windows" if "windows" in (req.os_type or "").lower() else "Linux"
+        logging.info("OS type seleccionado: %s", os_type)
+
         cbr_client = build_cbr_client(ak, sk, config.source_region)
         evs_client = build_evs_client(ak, sk, config.source_region)
         ims_src = build_ims_client(ak, sk, config.source_region)
@@ -295,21 +299,22 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                     logging.info("[2/6] Restaurando backup a volumen nuevo...")
                 volume_id = restore_backup(cbr_client, evs_client, backup, "SATA")
 
-                _check_stop()
-                logging.info("[3/6] Creando ECS automatica y attachando disco...")
-                ecs_client = build_ecs_client(ak, sk, config.source_region)
-                vpc_client = build_vpc_client(ak, sk, config.source_region)
-                ecs_info = create_ecs_and_attach(
-                    ecs_client=ecs_client,
-                    vpc_client=vpc_client,
-                    ims_client=ims_src,
-                    volume_id=volume_id,
-                    availability_zone=backup.resource_az,
-                    enable_ssh=is_large_disk,
-                )
-                logging.info("ECS creada: %s con disco %s attachado", ecs_info["server_id"], volume_id)
-
                 if is_large_disk:
+                    _check_stop()
+                    logging.info("[3/6] Creando ECS automatica (Linux, SSH) y attachando disco...")
+                    ecs_client = build_ecs_client(ak, sk, config.source_region)
+                    vpc_client = build_vpc_client(ak, sk, config.source_region)
+                    ecs_info = create_ecs_and_attach(
+                        ecs_client=ecs_client,
+                        vpc_client=vpc_client,
+                        ims_client=ims_src,
+                        volume_id=volume_id,
+                        availability_zone=backup.resource_az,
+                        enable_ssh=True,
+                        os_type="Linux",
+                    )
+                    logging.info("ECS creada: %s con disco %s attachado", ecs_info["server_id"], volume_id)
+
                     _check_stop()
                     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
                     object_key = f"{config.bucket_prefix}/{image_name}_{timestamp}.vhd"
@@ -327,10 +332,25 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                     result_entry["method"] = "direct_vhd"
                 else:
                     _check_stop()
-                    logging.info("[4/6] Creando imagen desde ECS...")
+                    logging.info("[3/6] Creando ECS automatica (%s) y attachando disco...", os_type)
+                    ecs_client = build_ecs_client(ak, sk, config.source_region)
+                    vpc_client = build_vpc_client(ak, sk, config.source_region)
+                    ecs_info = create_ecs_and_attach(
+                        ecs_client=ecs_client,
+                        vpc_client=vpc_client,
+                        ims_client=ims_src,
+                        volume_id=volume_id,
+                        availability_zone=backup.resource_az,
+                        enable_ssh=False,
+                        os_type=os_type,
+                    )
+                    logging.info("ECS creada: %s con disco %s attachado", ecs_info["server_id"], volume_id)
+
+                    _check_stop()
+                    logging.info("[4/6] Creando data disk image desde volumen...")
                     image_id = create_image(
                         ims_src, image_name,
-                        instance_id=ecs_info["server_id"],
+                        volume_id=volume_id,
                         poll_interval=config.poll_interval_seconds,
                         poll_timeout=config.poll_timeout_seconds,
                     )

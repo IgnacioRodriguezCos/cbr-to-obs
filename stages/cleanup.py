@@ -41,18 +41,21 @@ def _safe(fn, label: str):
 
 def _wait_server_gone(ecs_client: EcsClient, server_id: str, timeout: int = 600) -> None:
     deadline = time.time() + timeout
+    last_status = None
     while time.time() < deadline:
         try:
             resp = ecs_client.show_server(ShowServerRequest(server_id=server_id))
             status = getattr(resp.server, "status", "?") if hasattr(resp, "server") else "?"
-            logger.info("ECS %s status: %s", server_id, status)
+            if status != last_status:
+                logger.info("ECS %s status: %s", server_id[:8], status)
+                last_status = status
             time.sleep(5)
         except exceptions.ClientRequestException as e:
             if e.status_code == 404:
-                logger.info("ECS %s deleted (404)", server_id)
+                logger.info("ECS %s deleted", server_id[:8])
                 return
             raise
-    logger.warning("ECS %s still deleting after %ds, continuing cleanup", server_id, timeout)
+    logger.warning("ECS %s still deleting after %ds, continuing cleanup", server_id[:8], timeout)
 
 
 def _remove_subnet_from_routers(vpc_client: VpcClient, subnet_id: str) -> None:

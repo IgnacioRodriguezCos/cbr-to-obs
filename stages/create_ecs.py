@@ -165,12 +165,38 @@ def _find_centos_image(ims_client: ImsClient) -> str:
     raise RuntimeError("No se encontro imagen CentOS/Linux publica sin GPU")
 
 
-def _find_minimal_flavors(ecs_client: EcsClient) -> list[str]:
+def _find_windows_image(ims_client: ImsClient) -> str:
+    """Find a plain Windows Server public image (no GPU/preinstalled extras)."""
+    _EXCLUDE = ("tesla", "cuda", "gpu", "driver", "fusioncompute", "bms", "baremetal",
+                "sql", "exchange", "sharepoint", "rds", "preinstalled")
+    resp = ims_client.list_images(ListImagesRequest(imagetype="gold", status="active", limit=100))
+    images = resp.images or []
+
+    win = [img for img in images
+           if "windows" in (img.name or "").lower()
+           and not any(x in (img.name or "").lower() for x in _EXCLUDE)]
+    # Prefer Standard edition, then English versions, then name order
+    win.sort(key=lambda img: (
+        0 if "standard" in (img.name or "").lower() else 1,
+        0 if "english" in (img.name or "").lower() else 1,
+        img.name or "",
+    ))
+    if win:
+        logger.info("Found Windows image: %s (%s)", win[0].id, win[0].name)
+        return win[0].id
+    raise RuntimeError("No se encontro imagen Windows publica sin extras")
+
+
+def _find_minimal_flavors(ecs_client: EcsClient, min_ram_mb: int = 0) -> list[str]:
     """Return flavor IDs sorted by RAM (smallest first), excluding GPSSD2/ESSD2-only."""
     resp = ecs_client.list_flavors(ListFlavorsRequest(limit=200))
     flavors = resp.flavors or []
     if not flavors:
         raise RuntimeError("No se encontraron flavors disponibles")
+    if min_ram_mb:
+        flavors = [f for f in flavors if (getattr(f, "ram", 0) or 0) >= min_ram_mb]
+        if not flavors:
+            raise RuntimeError(f"No hay flavors con >= {min_ram_mb} MB RAM")
     flavors.sort(key=lambda f: getattr(f, "ram", 999999) or 999999)
     result = [f.id for f in flavors]
     logger.info("Candidate flavors (by RAM): %s", result[:10])
@@ -204,8 +230,13 @@ def create_ecs_and_attach(
     volume_id: str,
     availability_zone: str,
     enable_ssh: bool = False,
+    os_type: str = "Linux",
 ) -> dict:
     """Create an ECS with auto-provisioned networking and attach the restored volume.
+
+    os_type ("Windows"/"Linux") selects the base public image. IMS derives the
+    data disk image OS type from the ECS that owns the volume, so use a Windows
+    ECS when the restored disk contains Windows data.
 
     Returns dict with: server_id, vpc_id, subnet_id, security_group_id.
     When enable_ssh=True, also returns: keypair_name, private_key_pem, public_ip.
@@ -227,9 +258,14 @@ def create_ecs_and_attach(
         _add_ssh_rule(vpc_client, sg_id)
         logging.info("[3/6] SSH habilitado: keypair=%s, regla port 22 agregada", keypair_name)
 
-    logging.info("[3/6] Buscando imagen CentOS y flavor minimo...")
-    image_id = _find_centos_image(ims_client)
-    flavor_candidates = _find_minimal_flavors(ecs_client)
+    if os_type == "Windows":
+        logging.info("[3/6] Buscando imagen Windows y flavor (>=2GB RAM)...")
+        image_id = _find_windows_image(ims_client)
+        flavor_candidates = _find_minimal_flavors(ecs_client, min_ram_mb=2048)
+    else:
+        logging.info("[3/6] Buscando imagen CentOS y flavor minimo...")
+        image_id = _find_centos_image(ims_client)
+        flavor_candidates = _find_minimal_flavors(ecs_client)
 
     server_name = f"ecs-restore-{suffix}"
     server_spec_base = PrePaidServer(
