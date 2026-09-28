@@ -22,6 +22,26 @@ _RUNNING = "RUNNING"
 _INIT = "INIT"
 
 
+def _extract_image_id(entities) -> str | None:
+    """Extract image_id from job entities.
+
+    For single-image jobs it is at entities.image_id.
+    For data_images (multi-image) jobs it lives in sub_jobs_result[*].entities
+    or in results[*].
+    """
+    if not entities:
+        return None
+    if entities.image_id:
+        return entities.image_id
+    for sj in (entities.sub_jobs_result or []):
+        if sj.entities and getattr(sj.entities, "image_id", None):
+            return sj.entities.image_id
+    for r in (entities.results or []):
+        if getattr(r, "image_id", None):
+            return r.image_id
+    return None
+
+
 def poll_ims_job(
     ims_client: ImsClient,
     job_id: str,
@@ -34,13 +54,26 @@ def poll_ims_job(
         resp = ims_client.show_job(ImsShowJobRequest(job_id=job_id))
         status = (resp.status or "").upper()
         entities = resp.entities
-        image_id = entities.image_id if entities else None
+        image_id = _extract_image_id(entities)
         progress = entities.process_percent if entities else None
         logger.info(
             "  IMS job %s: status=%s progress=%s image_id=%s",
             job_id, status, progress, image_id,
         )
         if status == _SUCCESS:
+            if entities and entities.sub_jobs_result:
+                for sj in entities.sub_jobs_result:
+                    logger.info(
+                        "  Sub-job %s: status=%s image_id=%s image_name=%s",
+                        sj.job_id, sj.status,
+                        getattr(sj.entities, "image_id", None) if sj.entities else None,
+                        getattr(sj.entities, "image_name", None) if sj.entities else None,
+                    )
+            if not image_id:
+                raise RuntimeError(
+                    f"IMS job {job_id} succeeded but no image_id found "
+                    f"(entities.image_id, sub_jobs_result, results all empty)"
+                )
             return {"status": "success", "job_id": job_id, "image_id": image_id}
         if status == _FAIL:
             err = resp.error_code or ""
