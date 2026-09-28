@@ -219,6 +219,8 @@ def _wait_server_active(ecs_client: EcsClient, server_id: str, interval: int = 1
                 logger.info("  ECS %s not found yet (404) — still creating...", server_id)
             else:
                 raise
+        except (exceptions.ConnectionException, exceptions.RequestTimeoutException) as e:
+            logger.warning("  Transient network error polling ECS %s (will retry): %s", server_id, e)
         time.sleep(interval)
     raise TimeoutError(f"ECS {server_id} did not become ACTIVE after {timeout}s")
 

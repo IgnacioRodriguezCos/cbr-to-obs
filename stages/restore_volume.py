@@ -51,12 +51,18 @@ def wait_restore_complete(
         except exceptions.ClientRequestException as e:
             logger.warning("ShowBackup failed (non-fatal): %s", e)
             backup_status = "unknown"
+        except (exceptions.ConnectionException, exceptions.RequestTimeoutException) as e:
+            logger.warning("Transient network error on ShowBackup (non-fatal): %s", e)
+            backup_status = "unknown"
         try:
             vol_resp = evs_client.show_volume(ShowVolumeRequest(volume_id=volume_id))
             vol_status = vol_resp.volume.status if vol_resp.volume else ""
         except exceptions.ClientRequestException as e:
             logger.error("ShowVolume FAILED in wait_restore_complete: error_code=%s error_msg=%s", e.error_code, e.error_msg)
             raise
+        except (exceptions.ConnectionException, exceptions.RequestTimeoutException) as e:
+            logger.warning("Transient network error on ShowVolume (will retry): %s", e)
+            vol_status = "unknown"
         logger.info("  Restore status: backup=%s volume=%s", backup_status, vol_status)
 
         if backup_status != "restoring" and vol_status == "available":

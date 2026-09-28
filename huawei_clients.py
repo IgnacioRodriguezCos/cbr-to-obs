@@ -48,6 +48,12 @@ def _get_http_config() -> HttpConfig:
         config.ssl_ca_cert = ssl_ca_cert
     if ignore_ssl:
         config.ignore_ssl_verification = True
+    # Retry transient connection errors (proxy tunnel 407, resets, timeouts).
+    # urllib3 retries connect-phase failures for all HTTP methods.
+    try:
+        config.retry_times = int(os.environ.get("SDK_RETRY_TIMES", "3"))
+    except ValueError:
+        config.retry_times = 3
     return config
 
 

@@ -55,6 +55,9 @@ def _wait_server_gone(ecs_client: EcsClient, server_id: str, timeout: int = 600)
                 logger.info("ECS %s deleted", server_id[:8])
                 return
             raise
+        except (exceptions.ConnectionException, exceptions.RequestTimeoutException) as e:
+            logger.warning("Transient network error polling ECS %s (will retry): %s", server_id[:8], e)
+            time.sleep(5)
     logger.warning("ECS %s still deleting after %ds, continuing cleanup", server_id[:8], timeout)
 
 

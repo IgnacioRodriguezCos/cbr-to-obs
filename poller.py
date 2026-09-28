@@ -14,7 +14,11 @@ from huaweicloudsdkevs.v2.evs_client import EvsClient
 from huaweicloudsdkevs.v2 import ShowJobRequest as EvsShowJobRequest
 from huaweicloudsdkevs.v2 import ShowVolumeRequest
 
+from huaweicloudsdkcore.exceptions import exceptions as core_exceptions
+
 logger = logging.getLogger(__name__)
+
+_TRANSIENT = (core_exceptions.ConnectionException, core_exceptions.RequestTimeoutException)
 
 _SUCCESS = "SUCCESS"
 _FAIL = "FAIL"
@@ -51,7 +55,12 @@ def poll_ims_job(
     """Poll an IMS async job until completion. Returns dict with status, image_id, error."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        resp = ims_client.show_job(ImsShowJobRequest(job_id=job_id))
+        try:
+            resp = ims_client.show_job(ImsShowJobRequest(job_id=job_id))
+        except _TRANSIENT as e:
+            logger.warning("  Transient network error polling IMS job %s (will retry): %s", job_id, e)
+            time.sleep(interval)
+            continue
         status = (resp.status or "").upper()
         entities = resp.entities
         image_id = _extract_image_id(entities)
@@ -98,7 +107,12 @@ def poll_evs_job(
     """Poll an EVS async job until completion. Returns dict with status, volume_id, error."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        resp = evs_client.show_job(EvsShowJobRequest(job_id=job_id))
+        try:
+            resp = evs_client.show_job(EvsShowJobRequest(job_id=job_id))
+        except _TRANSIENT as e:
+            logger.warning("  Transient network error polling EVS job %s (will retry): %s", job_id, e)
+            time.sleep(interval)
+            continue
         status = (resp.status or "").upper()
         entities = resp.entities
         volume_id = entities.volume_id if entities else None
@@ -142,6 +156,10 @@ def wait_volume_available(
                 time.sleep(interval)
                 continue
             raise
+        except _TRANSIENT as e:
+            logger.warning("  Transient network error polling volume %s (will retry): %s", volume_id, e)
+            time.sleep(interval)
+            continue
         logger.info("  Volume %s status=%s", volume_id, status)
         if status == "available":
             return status
