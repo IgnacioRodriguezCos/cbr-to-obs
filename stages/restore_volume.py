@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 _FALLBACK_TYPES = ["SATA", "SAS", "GPSSD", "SSD", "ESSD"]
 _TYPES_REQUIRING_EXTRA_PARAMS = {"GPSSD2", "ESSD2"}
+_SOLD_OUT_KEY = "os-vendor-extended:sold_out_availability_zones"
+_AZ_TYPE_ERRORS = ("EVS.2071", "EVS.5400", "EVS.2072")
 
 
 def wait_restore_complete(
@@ -84,6 +86,23 @@ def get_available_volume_types(evs_client: EvsClient) -> list[str]:
     except Exception as e:
         logger.warning("Could not query volume types: %s — using fallback list", e)
         return list(_FALLBACK_TYPES)
+
+
+def _sold_out_map(evs_client: EvsClient) -> dict[str, list[str]]:
+    """Map volume type name -> AZs where it is sold out (best-effort, from extra_specs)."""
+    sold_out: dict[str, list[str]] = {}
+    try:
+        resp = evs_client.cinder_list_volume_types(CinderListVolumeTypesRequest())
+        for vt in (resp.volume_types or []):
+            specs = getattr(vt, "extra_specs", None) or {}
+            raw = specs.get(_SOLD_OUT_KEY, "") or ""
+            azs = [z.strip() for z in raw.split(",") if z.strip()]
+            if azs:
+                sold_out[vt.name] = azs
+                logger.info("Volume type %s sold out in AZs: %s", vt.name, azs)
+    except Exception as e:
+        logger.warning("Could not inspect volume type extra_specs: %s", e)
+    return sold_out
 
 
 def _try_create_volume(
@@ -149,23 +168,28 @@ def create_empty_volume(
 ) -> str:
     """Create an empty EVS volume, trying volume_type first with automatic fallback.
 
-    If the requested volume_type is not available in the AZ, tries other
-    available types in the region until one works.
+    Skips types known to be sold out in the target AZ (from volume type
+    extra_specs) and falls back to the next type on AZ/type-specific errors
+    (EVS.2071 not available, EVS.2072 sold out, EVS.5400).
     """
     available = get_available_volume_types(evs_client)
     available = [t for t in available if t not in _TYPES_REQUIRING_EXTRA_PARAMS]
     tried = [volume_type] + [t for t in available if t != volume_type] + [t for t in _FALLBACK_TYPES if t not in available and t != volume_type]
+    sold_out = _sold_out_map(evs_client)
     seen = set()
 
     for vtype in tried:
         if vtype in seen or vtype in _TYPES_REQUIRING_EXTRA_PARAMS:
             continue
         seen.add(vtype)
+        if availability_zone in sold_out.get(vtype, []):
+            logger.warning("Skipping volume type %s — sold out in AZ %s", vtype, availability_zone)
+            continue
         try:
             return _try_create_volume(evs_client, size_gb, availability_zone, vtype, name)
         except exceptions.ClientRequestException as e:
-            if e.error_code in ("EVS.2071", "EVS.5400"):
-                logger.warning("Volume type %s failed in AZ %s (%s) — trying next", vtype, availability_zone, e.error_code)
+            if e.error_code in _AZ_TYPE_ERRORS:
+                logger.warning("Volume type %s failed in AZ %s (%s: %s) — trying next", vtype, availability_zone, e.error_code, e.error_msg)
                 continue
             raise
     raise RuntimeError(f"No volume type worked for AZ {availability_zone}. Tried: {list(seen)}")
