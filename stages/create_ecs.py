@@ -128,15 +128,29 @@ def _generate_and_import_keypair(ecs_client: EcsClient, name: str) -> str:
     return private_key_pem
 
 
-def _get_public_ip(ecs_client: EcsClient, server_id: str) -> str:
-    """Extract the floating (EIP) address from a running ECS."""
-    resp = ecs_client.show_server(ShowServerRequest(server_id=server_id))
-    addresses = resp.server.addresses or {}
-    for _net, addrs in addresses.items():
-        for addr in (addrs or []):
-            if getattr(addr, "type", "") == "floating":
-                return addr.addr
-    raise RuntimeError(f"No public IP found on ECS {server_id}")
+def _get_public_ip(ecs_client: EcsClient, server_id: str, timeout: int = 180) -> str:
+    """Extract the floating (EIP) address from a running ECS.
+
+    The address type lives in ServerAddress.os_ext_ip_stype (JSON key
+    'OS-EXT-IPS:type'): 'fixed' or 'floating'. Retries briefly in case
+    the EIP binding lags behind the ACTIVE status.
+    """
+    deadline = time.time() + timeout
+    last_seen = None
+    while time.time() < deadline:
+        resp = ecs_client.show_server(ShowServerRequest(server_id=server_id))
+        addresses = resp.server.addresses or {}
+        last_seen = {
+            net: [(getattr(a, "addr", "?"), getattr(a, "os_ext_ip_stype", "?")) for a in (addrs or [])]
+            for net, addrs in addresses.items()
+        }
+        for _net, addrs in addresses.items():
+            for addr in (addrs or []):
+                if getattr(addr, "os_ext_ip_stype", "") == "floating":
+                    return addr.addr
+        logger.info("  No floating IP on %s yet (addresses=%s), retrying...", server_id, last_seen)
+        time.sleep(10)
+    raise RuntimeError(f"No public IP found on ECS {server_id} after {timeout}s (addresses={last_seen})")
 
 
 def _find_centos_image(ims_client: ImsClient) -> str:
