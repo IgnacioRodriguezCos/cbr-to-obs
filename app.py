@@ -27,7 +27,7 @@ from huawei_clients import (
     build_cbr_client, build_evs_client, build_ims_client, build_obs_client,
     build_ecs_client, build_vpc_client,
 )
-from stages.discover_backups import discover_backups
+from stages.discover_backups import discover_backups, detect_backup_os
 from stages.restore_volume import restore_backup
 from stages.create_ecs import create_ecs_and_attach
 from stages.create_image import create_image
@@ -293,8 +293,25 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
 
             try:
                 _check_stop()
+                detected_os = detect_backup_os(evs_client, backup)
+                if detected_os and detected_os != os_type:
+                    raise RuntimeError(
+                        f"El backup '{backup.name}' es un disco {detected_os} pero el OS "
+                        f"seleccionado es {os_type}. Cambia el selector de OS a "
+                        f"{detected_os} y vuelve a ejecutar."
+                    )
+                if detected_os:
+                    logging.info("OS del backup verificado: %s (coincide con la seleccion)", detected_os)
+                else:
+                    logging.info("OS del backup no detectable (disco de datos o volumen original eliminado) - continuando sin verificacion")
+
                 if is_large_disk:
                     logging.info("[2/6] Restaurando backup a volumen nuevo (DISCO >1TiB - export directo)...")
+                    logging.info(
+                        "Nota: la ECS Linux del export directo es una maquina auxiliar: "
+                        "el disco se copia a nivel de bloques con qemu-img y su contenido "
+                        "no se modifica ni se interpreta por el OS de la ECS."
+                    )
                 else:
                     logging.info("[2/6] Restaurando backup a volumen nuevo...")
                 volume_id = restore_backup(cbr_client, evs_client, backup, "SATA")

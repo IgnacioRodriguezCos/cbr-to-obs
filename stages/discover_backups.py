@@ -10,6 +10,9 @@ from typing import Optional
 from huaweicloudsdkcbr.v1.cbr_client import CbrClient
 from huaweicloudsdkcbr.v1 import ListBackupsRequest
 
+from huaweicloudsdkevs.v2.evs_client import EvsClient
+from huaweicloudsdkevs.v2 import ShowVolumeRequest
+
 logger = logging.getLogger(__name__)
 
 _RESOURCE_TYPE_VOLUME = "OS::Cinder::Volume"
@@ -25,6 +28,7 @@ class BackupInfo:
     resource_az: str
     vault_id: str
     status: str
+    os_type: Optional[str] = None
 
 
 def discover_backups(
@@ -76,3 +80,30 @@ def discover_backups(
             r.backup_id, r.name, r.resource_size_gb, r.resource_az,
         )
     return results
+
+
+def detect_backup_os(evs_client: EvsClient, backup: BackupInfo) -> Optional[str]:
+    """Detect the OS of the backed-up disk from the original volume metadata.
+
+    Reads volume_image_metadata.__os_type from the source volume (present on
+    bootable/system disks created from images). Returns 'Windows'/'Linux',
+    or None when undetectable (plain data disk, deleted volume, API error).
+    """
+    if not backup.resource_id:
+        return None
+    try:
+        resp = evs_client.show_volume(ShowVolumeRequest(volume_id=backup.resource_id))
+        meta = getattr(resp.volume, "volume_image_metadata", None) or {}
+        raw = meta.get("__os_type") or meta.get("os_type") or ""
+        if not raw:
+            logger.info(
+                "Backup %s: volumen original sin metadata de OS (disco de datos?)",
+                backup.backup_id[:8],
+            )
+            return None
+        detected = "Windows" if "windows" in str(raw).lower() else "Linux"
+        logger.info("Backup %s: OS detectado del volumen original: %s", backup.backup_id[:8], detected)
+        return detected
+    except Exception as e:
+        logger.warning("No se pudo detectar el OS del backup %s: %s", backup.backup_id[:8], e)
+        return None
