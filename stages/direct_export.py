@@ -68,14 +68,35 @@ def _run_cmd(ssh: paramiko.SSHClient, cmd: str, timeout: int = _CMD_TIMEOUT) -> 
 
 
 def _install_qemu_img(ssh: paramiko.SSHClient) -> None:
-    """Install qemu-img on the ECS (CentOS)."""
-    _run_cmd(ssh, "yum install -y qemu-img 2>&1 || yum install -y qemu-kvm 2>&1", timeout=120)
+    """Install qemu-img on the ECS.
+
+    CentOS 7 is EOL: mirrorlist.centos.org no longer resolves, so repo
+    files are repointed to vault.centos.org before yum runs. Skips the
+    install entirely if qemu-img is already present.
+    """
+    cmd = (
+        "if command -v qemu-img >/dev/null 2>&1; then "
+        "qemu-img --version; "
+        "else "
+        "if [ -d /etc/yum.repos.d ]; then "
+        "sed -i -e 's|^mirrorlist=|#mirrorlist=|g' "
+        "-e 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' "
+        "/etc/yum.repos.d/CentOS-*.repo 2>/dev/null; "
+        "yum clean all; "
+        "(yum install -y qemu-img || yum install -y qemu-kvm); "
+        "else "
+        "(apt-get update && apt-get install -y qemu-utils); "
+        "fi; "
+        "qemu-img --version; "
+        "fi"
+    )
+    _run_cmd(ssh, cmd, timeout=300)
 
 
 def _install_obsutil(ssh: paramiko.SSHClient) -> None:
     """Download and install obsutil on the ECS."""
     cmds = [
-        f"cd /tmp && wget -q '{_OBSUTIL_URL}' -O obsutil.tar.gz",
+        f"cd /tmp && (wget -q '{_OBSUTIL_URL}' -O obsutil.tar.gz || curl -sfL '{_OBSUTIL_URL}' -o obsutil.tar.gz)",
         "cd /tmp && tar xzf obsutil.tar.gz",
         "chmod +x /tmp/obsutil_linux_amd64_*/obsutil",
         "ln -sf /tmp/obsutil_linux_amd64_*/obsutil /usr/local/bin/obsutil",
