@@ -47,6 +47,8 @@ from huaweicloudsdkvpc.v2 import (
 
 from huaweicloudsdkcore.exceptions import exceptions
 
+from stages.cleanup import cleanup_orphaned_resources
+
 logger = logging.getLogger(__name__)
 
 _VPC_CIDR = "192.168.0.0/16"
@@ -258,6 +260,9 @@ def create_ecs_and_attach(
     When enable_ssh=True, also returns: keypair_name, private_key_pem, public_ip.
     """
     suffix = uuid.uuid4().hex[:6]
+
+    logging.info("[3/6] Limpiando recursos huerfanos de corridas anteriores...")
+    cleanup_orphaned_resources(ecs_client, vpc_client)
 
     logging.info("[3/6] Provisionando networking automatico...")
     vpc_id = _create_vpc(vpc_client, f"vpc-restore-{suffix}")
