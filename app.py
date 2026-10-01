@@ -5,6 +5,7 @@ import os
 import sys
 import time
 import logging
+import subprocess
 import uuid
 import webbrowser
 import threading
@@ -43,6 +44,26 @@ from stages.direct_export import direct_export_to_obs
 from stages.cleanup import cleanup_resources
 
 app = FastAPI()
+
+
+def _git_commit() -> str:
+    """Short hash of the checked-out commit ('unknown' if git is unavailable)."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+# Commit checked out when this process imported the module. With uvicorn
+# auto-reload the worker restarts on every file change so this stays in sync;
+# a mismatch at pipeline start means the server process predates recent
+# fixes (the classic "old code still running" failure mode).
+_STARTUP_COMMIT = _git_commit()
 
 REGIONS = [
     {"id": "sa-argentina-1", "name": "Buenos Aires"},
@@ -215,6 +236,18 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
     root_logger.setLevel(logging.INFO)
 
     try:
+        current = _git_commit()
+        if current != _STARTUP_COMMIT and current != "unknown":
+            raise RuntimeError(
+                f"CODIGO DESACTUALIZADO: el servidor esta corriendo el commit "
+                f"{_STARTUP_COMMIT} pero el repositorio esta en {current}. "
+                "Los fixes recientes NO estan activos (por eso aparecen errores "
+                "ya corregidos). Reinicia el servidor: Ctrl+C en su consola y "
+                "vuelve a ejecutar 'python run_server.py'. Con el auto-reload "
+                "activado, este sera el ultimo reinicio manual."
+            )
+        logging.info("Codigo activo: commit %s", _STARTUP_COMMIT)
+
         config = PipelineConfig(
             ak=ak, sk=sk,
             source_region=req.source_region,
@@ -537,6 +570,7 @@ async def pipeline_run(request: Request, req: PipelineRunRequest):
 @app.get("/api/pipeline/status")
 async def pipeline_status():
     """Get current pipeline status."""
+    current = _git_commit()
     with _pipeline_lock:
         return {
             "running": _pipeline_state["running"],
@@ -548,6 +582,8 @@ async def pipeline_status():
             "logs": list(_pipeline_state["logs"]),
             "error": _pipeline_state["error"],
             "started_at": _pipeline_state["started_at"],
+            "code_commit": _STARTUP_COMMIT,
+            "code_stale": current != _STARTUP_COMMIT and current != "unknown",
         }
 
 

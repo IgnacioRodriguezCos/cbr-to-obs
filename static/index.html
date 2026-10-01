@@ -87,6 +87,14 @@
           <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10c0 2 3 3 8 3s8-1 8-3V7M4 7c0 2 3 3 8 3s8-1 8-3M4 7c0-2 3-3 8-3s8 1 8 3m0 5c0 2-3 3-8 3s-8-1-8-3"/></svg>
         </div>
         <h1 class="text-base font-bold text-slate-800 dark:text-slate-200">CBR → OBS</h1>
+        <span v-if="codeStale" class="text-xs font-bold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg px-2 py-1"
+              title="El servidor corre codigo viejo: Ctrl+C en la consola y 'python run_server.py' de nuevo">
+          CODIGO VIEJO ({{ codeCommit }}) — reinicia el servidor
+        </span>
+        <span v-else-if="codeCommit" class="hidden md:inline text-[11px] font-mono text-slate-400 dark:text-slate-500 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1"
+              title="Commit de codigo activo en el servidor">
+          {{ codeCommit }}
+        </span>
       </div>
       <div class="flex items-center gap-3">
         <div class="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1" data-tour="region-selector">
@@ -406,6 +414,8 @@ createApp({
     const obsBuckets = ref([]);
     const selectedBackupIds = ref([]);
     const backupSearch = ref('');
+    const codeCommit = ref(null);
+    const codeStale = ref(false);
     const filteredBackups = computed(() => {
       if (!backupSearch.value) return discoveredBackups.value;
       const q = backupSearch.value.toLowerCase();
@@ -590,6 +600,8 @@ createApp({
         const resp = await fetch('/api/pipeline/status', { headers: headers() });
         const data = await resp.json();
         pipeStatus.value = data;
+        codeCommit.value = data.code_commit || null;
+        codeStale.value = !!data.code_stale;
         nextTick(() => {
           const el = document.getElementById('pipeline-logs');
           if (el) el.scrollTop = el.scrollHeight;
@@ -599,6 +611,16 @@ createApp({
         pipePollTimer = setTimeout(pollPipelineStatus, 2000);
       }
     }
+
+    async function fetchCodeInfo() {
+      try {
+        const resp = await fetch('/api/pipeline/status', { headers: headers() });
+        const data = await resp.json();
+        codeCommit.value = data.code_commit || null;
+        codeStale.value = !!data.code_stale;
+      } catch (e) { /* ignore */ }
+    }
+    fetchCodeInfo();
 
     // Tour state
     const tourActive = ref(false);
@@ -693,7 +715,7 @@ createApp({
              login, logout, selectRegion, fetchVaults, fetchVolumes,
               initPipeline, discoverBackups, runPipeline, stopPipeline, resetPipeline, pollPipelineStatus, fetchBuckets,
               selectAllBackups, deselectAllBackups,
-             backupSearch, filteredBackups,
+             backupSearch, filteredBackups, codeCommit, codeStale,
              darkMode, toggleDark,
              tourActive, tourStepIndex, tourSteps, tourHighlightStyle, tourTooltipStyle,
              startTour, stopTour, nextTourStep, prevTourStep, goTourStep };
