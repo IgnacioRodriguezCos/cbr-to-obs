@@ -54,6 +54,10 @@ logger = logging.getLogger(__name__)
 _VPC_CIDR = "192.168.0.0/16"
 _SUBNET_CIDR = "192.168.0.0/24"
 _GATEWAY_IP = "192.168.0.1"
+# Huawei internal DNS (all regions) + public fallback via EIP.
+# Without dns_list the subnet gets no DNS and the ECS cannot resolve
+# anything (yum/wget fail with 'Could not resolve host').
+_DNS_LIST = ["100.125.1.250", "8.8.8.8"]
 
 
 def _create_vpc(vpc_client: VpcClient, name: str) -> str:
@@ -71,12 +75,13 @@ def _create_subnet(vpc_client: VpcClient, vpc_id: str, name: str) -> str:
         body=CreateSubnetRequestBody(
             subnet=CreateSubnetOption(
                 vpc_id=vpc_id, name=name, cidr=_SUBNET_CIDR, gateway_ip=_GATEWAY_IP,
+                dns_list=_DNS_LIST,
             )
         )
     )
     resp = vpc_client.create_subnet(request)
     subnet_id = resp.subnet.id
-    logger.info("Subnet created: %s (%s)", subnet_id, _SUBNET_CIDR)
+    logger.info("Subnet created: %s (%s, dns=%s)", subnet_id, _SUBNET_CIDR, _DNS_LIST)
     return subnet_id
 
 

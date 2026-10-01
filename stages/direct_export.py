@@ -70,23 +70,26 @@ def _run_cmd(ssh: paramiko.SSHClient, cmd: str, timeout: int = _CMD_TIMEOUT) -> 
 def _install_qemu_img(ssh: paramiko.SSHClient) -> None:
     """Install qemu-img on the ECS.
 
-    CentOS 7 is EOL: mirrorlist.centos.org no longer resolves, so repo
-    files are repointed to vault.centos.org before yum runs. Skips the
-    install entirely if qemu-img is already present.
+    Order: already present -> stock yum repos (Huawei images point at
+    repo.huaweicloud.com, which still serves CentOS 7) -> repos repointed
+    to vault.centos.org (CentOS 7 EOL fallback) -> qemu-kvm -> apt.
+    Requires the subnet to have DNS configured, else every host fails
+    to resolve.
     """
     cmd = (
         "if command -v qemu-img >/dev/null 2>&1; then "
         "qemu-img --version; "
-        "else "
-        "if [ -d /etc/yum.repos.d ]; then "
-        "sed -i -e 's|^mirrorlist=|#mirrorlist=|g' "
+        "elif command -v yum >/dev/null 2>&1; then "
+        "(yum install -y qemu-img || "
+        "{ sed -i -e 's|^mirrorlist=|#mirrorlist=|g' "
         "-e 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' "
+        "-e 's|repo.huaweicloud.com/centos/\\$releasever|vault.centos.org/centos/7|g' "
         "/etc/yum.repos.d/CentOS-*.repo 2>/dev/null; "
-        "yum clean all; "
-        "(yum install -y qemu-img || yum install -y qemu-kvm); "
+        "yum clean all; yum install -y qemu-img; } || "
+        "yum install -y qemu-kvm); "
+        "qemu-img --version; "
         "else "
         "(apt-get update && apt-get install -y qemu-utils); "
-        "fi; "
         "qemu-img --version; "
         "fi"
     )
