@@ -1,22 +1,36 @@
 # coding: utf-8
-"""Stage 4b (for disks > 1 TiB): Direct export via SSH + qemu-img + obsutil.
+"""Stage 4b (for disks > 1 TiB): Direct export via SSH + qemu-img + presigned PUT.
 
 When the restored volume exceeds the 1 TiB IMS image limit, we bypass IMS
-entirely: SSH into the ECS, convert the data disk to VHD with qemu-img,
-and upload directly to OBS using obsutil.
+entirely: SSH into the ECS, convert the data disk to VHD with qemu-img on
+a scratch disk, and upload with curl using an OBS presigned URL.
 
-The VHD is written to a scratch data disk attached to the helper ECS
-(the 40 GB root volume cannot hold it). Disk roles are identified by
-attach order: vda=root, vdb=restored data disk, vdc=scratch.
+Design notes:
+- The VHD is written to a scratch data disk (the 40 GB root volume cannot
+  hold it). Disk roles by attach order: vda=root, vdb=data, vdc=scratch.
+- The upload targets the INTERNAL OBS endpoint (obs.<region>.internal.
+  myhuaweicloud.com): intra-region traffic, no EIP bandwidth limit (the
+  public endpoint would cap a 1 TiB upload at the EIP's 5 Mbps ~ weeks).
+- The presigned URL is computed on the laptop (OBS V2 signature); the AK
+  signs the request and the SK never reaches the ECS. URLs are redacted
+  from logs. This replaces obsutil entirely: no external downloads, no
+  credentials on the box.
+- A HEAD pre-flight runs BEFORE the multi-hour convert: DNS, TLS and the
+  signature against the internal endpoint are validated in seconds
+  (404 = object not there yet, which is what we want).
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import io
 import logging
 import socket
 import threading
 import time
+from urllib.parse import quote
 
 import paramiko
 
@@ -25,12 +39,10 @@ logger = logging.getLogger(__name__)
 _SSH_TIMEOUT = 30
 _CMD_TIMEOUT = 600
 
-_OBSUTIL_URL = (
-    "https://obs-community-intl.obs.intl.myhuaweicloud.com"
-    "/obsutil/current/obsutil_linux_amd64.tar.gz"
-)
-
 _SCRATCH_MOUNT = "/mnt/scratch"
+
+# Max presigned URL lifetime (OBS allows up to 7 days; stay under it).
+_PRESIGN_TTL = 6 * 86400
 
 
 def _ssh_connect(public_ip: str, private_key_pem: str) -> paramiko.SSHClient:
@@ -57,6 +69,30 @@ def _ssh_connect(public_ip: str, private_key_pem: str) -> paramiko.SSHClient:
     raise RuntimeError(f"Could not SSH to {public_ip} after 120s")
 
 
+def _obs_presign(
+    ak: str, sk: str, verb: str, bucket: str, key: str, host: str, expires: int
+) -> str:
+    """Presigned URL using the OBS V2 (S3-compatible) query signature.
+
+    StringToSign = VERB\\nContent-MD5\\nContent-Type\\nExpires\\nResource
+    With no Content-Type/MD5 and no x-obs headers this collapses to
+    VERB, two empty lines, the expiry and /bucket/key. The request must
+    not send a Content-Type (curl strips it with -H 'Content-Type:').
+    """
+    resource = f"/{bucket}/{key}"
+    string_to_sign = f"{verb}\n\n\n{expires}\n{resource}"
+    digest = hmac.new(
+        sk.encode("utf-8"), string_to_sign.encode("utf-8"), hashlib.sha1
+    ).digest()
+    signature = base64.b64encode(digest).decode("utf-8")
+    return (
+        f"https://{host}/{quote(key)}"
+        f"?AccessKeyId={quote(ak, safe='')}"
+        f"&Expires={expires}"
+        f"&Signature={quote(signature, safe='')}"
+    )
+
+
 def _tail(text: str, n: int = 15) -> str:
     """Last n non-empty lines of an output (for error messages)."""
     lines = [l for l in text.replace("\r", "\n").split("\n") if l.strip()]
@@ -70,20 +106,23 @@ def _as_text(raw) -> str:
     return raw
 
 
-def _run_cmd(ssh: paramiko.SSHClient, cmd: str, timeout: int = _CMD_TIMEOUT) -> str:
+def _run_cmd(
+    ssh: paramiko.SSHClient,
+    cmd: str,
+    timeout: int = _CMD_TIMEOUT,
+    display: str | None = None,
+) -> str:
     """Run a command over SSH, streaming output to the log. Returns stdout.
 
-    - stderr is drained in a thread and logged live (yum/dnf put real
-      errors there; without draining, a full buffer deadlocks the command).
-    - stdout is logged sampled (first 10 lines + every 50th) so chatty
-      commands (qemu-img convert -p) don't flood the log, while short
-      outputs still show completely.
+    - `display` overrides what gets logged (used to redact presigned URLs).
+    - stderr is drained in a thread (a full buffer deadlocks the command)
+      and both streams are logged sampled (first 10 lines + every 50th)
+      so chatty commands don't flood the log.
     - The channel timeout is per-read idle, NOT total duration: commands
       that keep producing output can run for hours.
-    - On failure the error includes the tail of BOTH streams (yum prints
-      many errors to stdout, which previously got lost).
+    - On failure the error includes the tail of BOTH streams.
     """
-    logger.info("  $ %s", cmd)
+    logger.info("  $ %s", display or cmd)
     stdin, stdout, stderr = ssh.exec_command(cmd, timeout=timeout)
 
     err_buf: list[str] = []
@@ -96,7 +135,9 @@ def _run_cmd(ssh: paramiko.SSHClient, cmd: str, timeout: int = _CMD_TIMEOUT) -> 
                     break
                 line = _as_text(raw)
                 err_buf.append(line)
-                logger.info("    [stderr] %s", line.rstrip())
+                n = len(err_buf)
+                if n <= 10 or n % 50 == 0:
+                    logger.info("    [stderr] %s", line.rstrip())
         except Exception:
             pass
 
@@ -116,7 +157,7 @@ def _run_cmd(ssh: paramiko.SSHClient, cmd: str, timeout: int = _CMD_TIMEOUT) -> 
                 logger.info("    %s", line.rstrip())
     except socket.timeout:
         raise RuntimeError(
-            f"Sin output del comando por {timeout}s (timeout del canal SSH): {cmd}"
+            f"Sin output del comando por {timeout}s (timeout del canal SSH): {display or cmd}"
         )
 
     exit_code = stdout.channel.recv_exit_status()
@@ -131,7 +172,7 @@ def _run_cmd(ssh: paramiko.SSHClient, cmd: str, timeout: int = _CMD_TIMEOUT) -> 
 
     if exit_code != 0:
         raise RuntimeError(
-            f"Command failed (exit {exit_code}): {cmd}\n"
+            f"Command failed (exit {exit_code}): {display or cmd}\n"
             f"--- stdout (tail) ---\n{_tail(out)}\n"
             f"--- stderr (tail) ---\n{_tail(err)}"
         )
@@ -216,33 +257,6 @@ def _install_qemu_img(ssh: paramiko.SSHClient) -> None:
     _log_qemu_img_version(ssh)
 
 
-def _install_obsutil(ssh: paramiko.SSHClient) -> None:
-    """Download and install obsutil on the ECS.
-
-    wget runs WITHOUT -q on purpose: its progress dots keep the SSH
-    channel alive during long downloads.
-    """
-    cmds = [
-        (
-            f"cd /tmp && (wget '{_OBSUTIL_URL}' -O obsutil.tar.gz "
-            f"|| curl -fL '{_OBSUTIL_URL}' -o obsutil.tar.gz)",
-            600,
-        ),
-        ("cd /tmp && tar xzf obsutil.tar.gz", 120),
-        ("chmod +x /tmp/obsutil_linux_amd64_*/obsutil", 30),
-        ("ln -sf /tmp/obsutil_linux_amd64_*/obsutil /usr/local/bin/obsutil", 30),
-        ("obsutil version", 30),
-    ]
-    for cmd, tmo in cmds:
-        _run_cmd(ssh, cmd, timeout=tmo)
-
-
-def _configure_obsutil(ssh: paramiko.SSHClient, ak: str, sk: str, region: str) -> None:
-    """Configure obsutil with credentials and endpoint."""
-    endpoint = f"obs.{region}.myhuaweicloud.com"
-    _run_cmd(ssh, f"obsutil config -i={ak} -k={sk} -e={endpoint}", timeout=30)
-
-
 def _list_disks(ssh: paramiko.SSHClient) -> list[tuple[str, int]]:
     """Disks in attach order: [(name, size_bytes), ...]."""
     out = _run_cmd(ssh, 'lsblk -b -d -o NAME,SIZE,TYPE | awk \'$3=="disk"{print $1, $2}\'')
@@ -308,20 +322,24 @@ def direct_export_to_obs(
 ) -> bool:
     """SSH into ECS, convert data disk to VHD on the scratch disk, upload to OBS.
 
-    Steps:
-    1. SSH connect
-    2. Install qemu-img + obsutil
-    3. Configure obsutil with AK/SK
-    4. mkfs + mount scratch disk (vdc)
-    5. qemu-img convert -f raw -O vhd /dev/vdb <scratch>/export.vhd
-    6. obsutil cp to OBS + verify
+    The bucket must live in `region` (the ECS's region) so the internal
+    endpoint applies. Steps:
+    1. SSH connect, ensure qemu-img
+    2. mkfs + mount scratch disk (vdc)
+    3. HEAD pre-flight against the internal OBS endpoint (fast fail)
+    4. qemu-img convert -f raw -O vpc /dev/vdb <scratch>/export.vhd
+    5. curl PUT via presigned URL + HEAD verification
     """
+    host = f"{bucket_name}.obs.{region}.internal.myhuaweicloud.com"
+    expires = int(time.time()) + _PRESIGN_TTL
+    put_url = _obs_presign(ak, sk, "PUT", bucket_name, object_key, host, expires)
+    head_url = _obs_presign(ak, sk, "HEAD", bucket_name, object_key, host, expires)
+    redacted = f"https://{host}/{quote(object_key)}?<firma-oculta>"
+
     ssh = _ssh_connect(public_ip, private_key_pem)
     try:
-        logger.info("[4b/6] Instalando qemu-img y obsutil en ECS...")
+        logger.info("[4b/6] Verificando qemu-img en la ECS...")
         _install_qemu_img(ssh)
-        _install_obsutil(ssh)
-        _configure_obsutil(ssh, ak, sk, region)
 
         roles = _wait_for_disks(ssh, expected_data_gb=expected_data_gb)
         data_dev = f"/dev/{roles['data'][0]}"
@@ -336,6 +354,22 @@ def direct_export_to_obs(
         )
         _run_cmd(ssh, f"df -h {_SCRATCH_MOUNT}", timeout=30)
 
+        logger.info("[5b/6] Pre-flight del upload contra OBS interno...")
+        code_out = _run_cmd(
+            ssh,
+            f"curl -s -o /dev/null -w '%{{http_code}}' -H 'Content-Type:' '{head_url}'",
+            timeout=120,
+            display=f"curl HEAD {redacted}",
+        )
+        code = code_out.strip().splitlines()[-1].strip() if code_out.strip() else ""
+        if code not in ("200", "404"):
+            raise RuntimeError(
+                f"Pre-flight OBS devolvio HTTP {code!r} (esperaba 404 = objeto "
+                "aun inexistente, o 200 = ya existe de una corrida previa). "
+                "Revisar: DNS del endpoint interno, firma, o bucket en otra region."
+            )
+        logger.info("Pre-flight OK (HTTP %s) — endpoint interno, TLS y firma validos", code)
+
         vhd_path = f"{_SCRATCH_MOUNT}/export.vhd"
         logger.info("[5b/6] Convirtiendo %s a VHD (puede tardar horas)...", data_dev)
         # 'vpc' is qemu's canonical name for the VHD format; old qemu-img
@@ -349,22 +383,27 @@ def direct_export_to_obs(
         size_out = _run_cmd(ssh, f"ls -lh {vhd_path} | awk '{{print $5}}'", timeout=30)
         logger.info("VHD file size: %s", size_out.strip())
 
-        logger.info("[6b/6] Subiendo VHD a OBS con obsutil...")
+        logger.info("[6b/6] Subiendo VHD a OBS via endpoint interno (curl PUT)...")
         _run_cmd(
             ssh,
-            f"obsutil cp {vhd_path} obs://{bucket_name}/{object_key} -f",
+            f"curl -f --retry 3 -H 'Content-Type:' -T {vhd_path} '{put_url}'",
             timeout=7200,
+            display=f"curl -T {vhd_path} {redacted}",
         )
 
-        logger.info("Verificando objeto en OBS...")
-        list_out = _run_cmd(
+        logger.info("[6b/6] Verificando objeto en OBS (HEAD)...")
+        head_out = _run_cmd(
             ssh,
-            f"obsutil ls obs://{bucket_name}/{object_key} -d -limit=1",
-            timeout=60,
+            f"curl -sI -H 'Content-Type:' '{head_url}'",
+            timeout=120,
+            display=f"curl -sI {redacted}",
         )
-        if object_key not in list_out:
-            logger.warning("Object key not found in obsutil ls output")
-            return False
+        status_line = head_out.strip().splitlines()[0] if head_out.strip() else ""
+        if " 200" not in status_line:
+            raise RuntimeError(f"Verificacion HEAD fallo: {status_line!r} (esperaba 200)")
+        for line in head_out.splitlines():
+            if line.lower().startswith("content-length"):
+                logger.info("Objeto en OBS — %s", line.strip())
 
         _run_cmd(ssh, f"rm -f {vhd_path}", timeout=60)
 
