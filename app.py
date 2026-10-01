@@ -346,9 +346,10 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                     logging.info("OS del backup no detectable (disco de datos o volumen original eliminado) - continuando sin verificacion")
 
                 if is_large_disk:
-                    if backup.resource_size_gb > 2040:
+                    # VHD caps at ~2040 decimal GB = ~1900 GiB (EVS sizes are GiB).
+                    if backup.resource_size_gb > 1900:
                         raise RuntimeError(
-                            f"El disco de {backup.resource_size_gb}GB excede el limite del "
+                            f"El disco de {backup.resource_size_gb}GiB excede el limite del "
                             "formato VHD (~2040GB). El export directo no puede procesarlo."
                         )
                     logging.info("[2/6] Restaurando backup a volumen nuevo (DISCO >1TiB - export directo)...")

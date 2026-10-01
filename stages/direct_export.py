@@ -295,11 +295,12 @@ def _wait_for_disks(
             f"{len(disks)}: {disks}"
         )
     if expected_data_gb:
-        data_gb = disks[1][1] / 1e9
-        if abs(data_gb - expected_data_gb) > expected_data_gb * 0.05:
+        # EVS 'size_gb' values are GiB (1100 -> exactly 1100 * 2^30 bytes).
+        data_gib = disks[1][1] / 2**30
+        if abs(data_gib - expected_data_gb) > expected_data_gb * 0.05:
             raise RuntimeError(
-                f"El segundo disco mide {data_gb:.0f}GB pero se esperaban "
-                f"~{expected_data_gb}GB (orden de attach inesperado): {disks}"
+                f"El segundo disco mide {data_gib:.0f}GiB pero se esperaban "
+                f"~{expected_data_gb}GiB (orden de attach inesperado): {disks}"
             )
     roles = {"root": disks[0], "data": disks[1]}
     if len(disks) >= 3:
