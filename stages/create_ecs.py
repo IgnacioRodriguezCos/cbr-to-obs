@@ -37,6 +37,8 @@ from huaweicloudsdkecs.v2 import (
 from huaweicloudsdkims.v2.ims_client import ImsClient
 from huaweicloudsdkims.v2 import ListImagesRequest
 
+from huaweicloudsdkevs.v2.evs_client import EvsClient
+
 from huaweicloudsdkvpc.v2.vpc_client import VpcClient
 from huaweicloudsdkvpc.v2 import (
     CreateVpcRequest, CreateVpcRequestBody, CreateVpcOption,
@@ -254,6 +256,7 @@ def create_ecs_and_attach(
     availability_zone: str,
     enable_ssh: bool = False,
     os_type: str = "Linux",
+    evs_client: EvsClient | None = None,
 ) -> dict:
     """Create an ECS with auto-provisioned networking and attach the restored volume.
 
@@ -261,13 +264,20 @@ def create_ecs_and_attach(
     data disk image OS type from the ECS that owns the volume, so use a Windows
     ECS when the restored disk contains Windows data.
 
+    evs_client enables GC of leftover volumes from crashed runs; the current
+    run's volume_id is always protected.
+
     Returns dict with: server_id, vpc_id, subnet_id, security_group_id.
     When enable_ssh=True, also returns: keypair_name, private_key_pem, public_ip.
     """
     suffix = uuid.uuid4().hex[:6]
 
     logging.info("[3/6] Limpiando recursos huerfanos de corridas anteriores...")
-    cleanup_orphaned_resources(ecs_client, vpc_client)
+    cleanup_orphaned_resources(
+        ecs_client, vpc_client,
+        evs_client=evs_client,
+        protect_volume_ids={volume_id} if volume_id else None,
+    )
 
     logging.info("[3/6] Provisionando networking automatico...")
     vpc_id = _create_vpc(vpc_client, f"vpc-restore-{suffix}")

@@ -5,6 +5,7 @@ import os
 import sys
 import time
 import logging
+import uuid
 import webbrowser
 import threading
 from datetime import datetime
@@ -21,6 +22,11 @@ from huaweicloudsdkcbr.v1.model.list_vault_request import ListVaultRequest
 from huaweicloudsdkevs.v2.evs_client import EvsClient
 from huaweicloudsdkevs.v2.region.evs_region import EvsRegion
 from huaweicloudsdkevs.v2.model.list_volumes_request import ListVolumesRequest
+from huaweicloudsdkecs.v2 import (
+    AttachServerVolumeRequest,
+    AttachServerVolumeRequestBody,
+    AttachServerVolumeOption,
+)
 
 from config import PipelineConfig
 from huawei_clients import (
@@ -28,7 +34,7 @@ from huawei_clients import (
     build_ecs_client, build_vpc_client,
 )
 from stages.discover_backups import discover_backups, detect_backup_os
-from stages.restore_volume import restore_backup
+from stages.restore_volume import restore_backup, create_empty_volume
 from stages.create_ecs import create_ecs_and_attach
 from stages.create_image import create_image
 from stages.cross_region import copy_image_cross_region
@@ -289,6 +295,7 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
             image_id = None
             ecs_client = None
             vpc_client = None
+            scratch_volume_id = None
             is_large_disk = backup.resource_size_gb > 1024
 
             try:
@@ -306,6 +313,11 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                     logging.info("OS del backup no detectable (disco de datos o volumen original eliminado) - continuando sin verificacion")
 
                 if is_large_disk:
+                    if backup.resource_size_gb > 2040:
+                        raise RuntimeError(
+                            f"El disco de {backup.resource_size_gb}GB excede el limite del "
+                            "formato VHD (~2040GB). El export directo no puede procesarlo."
+                        )
                     logging.info("[2/6] Restaurando backup a volumen nuevo (DISCO >1TiB - export directo)...")
                     logging.info(
                         "Nota: la ECS Linux del export directo es una maquina auxiliar: "
@@ -329,8 +341,32 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                         availability_zone=backup.resource_az,
                         enable_ssh=True,
                         os_type="Linux",
+                        evs_client=evs_client,
                     )
                     logging.info("ECS creada: %s con disco %s attachado", ecs_info["server_id"], volume_id)
+
+                    _check_stop()
+                    scratch_gb = backup.resource_size_gb + 16
+                    logging.info(
+                        "[3b/6] Creando disco scratch de %dGB para el VHD "
+                        "(el root de la ECS es de 40GB y no alcanza)...", scratch_gb,
+                    )
+                    scratch_volume_id = create_empty_volume(
+                        evs_client=evs_client,
+                        size_gb=scratch_gb,
+                        availability_zone=backup.resource_az,
+                        volume_type="SATA",
+                        name=f"scratch-restore-{uuid.uuid4().hex[:6]}",
+                    )
+                    logging.info("Attachando scratch %s a ECS %s...", scratch_volume_id, ecs_info["server_id"])
+                    ecs_client.attach_server_volume(AttachServerVolumeRequest(
+                        server_id=ecs_info["server_id"],
+                        body=AttachServerVolumeRequestBody(
+                            volume_attachment=AttachServerVolumeOption(
+                                volume_id=scratch_volume_id,
+                            )
+                        ),
+                    ))
 
                     _check_stop()
                     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -343,6 +379,7 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                         region=config.source_region,
                         bucket_name=config.bucket_name,
                         object_key=object_key,
+                        expected_data_gb=backup.resource_size_gb,
                     )
                     result_entry["exported"] = success
                     result_entry["object_key"] = object_key
@@ -360,6 +397,7 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                         availability_zone=backup.resource_az,
                         enable_ssh=False,
                         os_type=os_type,
+                        evs_client=evs_client,
                     )
                     logging.info("ECS creada: %s con disco %s attachado", ecs_info["server_id"], volume_id)
 
@@ -424,6 +462,7 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                         image_id=image_id or "",
                         volume_id=volume_id or "",
                         keypair_name=(ecs_info or {}).get("keypair_name", ""),
+                        scratch_volume_id=scratch_volume_id or "",
                     )
 
             with _pipeline_lock:

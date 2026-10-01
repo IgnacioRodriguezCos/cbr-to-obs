@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from huaweicloudsdkecs.v2.ecs_client import EcsClient
@@ -22,7 +23,7 @@ from huaweicloudsdkvpc.v2 import (
 from huaweicloudsdkims.v2.ims_client import ImsClient
 from huaweicloudsdkims.v2 import GlanceDeleteImageRequest
 from huaweicloudsdkevs.v2.evs_client import EvsClient
-from huaweicloudsdkevs.v2 import DeleteVolumeRequest
+from huaweicloudsdkevs.v2 import DeleteVolumeRequest, ListVolumesRequest
 from huaweicloudsdkcore.exceptions import exceptions
 
 logger = logging.getLogger(__name__)
@@ -71,14 +72,30 @@ _ORPHAN_PREFIXES = {
     "keypair": "kp-restore-",
 }
 
+# Restored volumes are named restore-<8 hex chars of the backup id>; scratch
+# volumes scratch-restore-<6 hex chars>. The regex makes accidental collision
+# with user volumes virtually impossible.
+_RESTORE_VOL_RE = re.compile(r"^restore-[0-9a-f]{8}$")
+_ORPHAN_VOL_PREFIX = "scratch-restore-"
 
-def cleanup_orphaned_resources(ecs_client: EcsClient, vpc_client: VpcClient) -> None:
+
+def cleanup_orphaned_resources(
+    ecs_client: EcsClient,
+    vpc_client: VpcClient,
+    evs_client: EvsClient | None = None,
+    protect_volume_ids: set[str] | None = None,
+) -> None:
     """Garbage-collect resources left behind by failed pipeline runs.
 
     Only touches resources named with the pipeline prefixes (*-restore-*).
+    Volumes are matched by exact name pattern (restore-<hex8> or
+    scratch-restore-*), must be unattached ('available') and not in
+    protect_volume_ids (the current run's restored volume is unattached
+    at GC time and MUST be protected).
     Best-effort: resources still in use fail to delete and are skipped.
-    Frees VPC/router quota so a new run can provision its networking.
+    Frees VPC/router and EVS quota so a new run can provision.
     """
+    protect = protect_volume_ids or set()
     # 1. Orphan ECS servers (they pin subnets/VPCs and cost money)
     try:
         servers = ecs_client.list_servers_details(
@@ -159,6 +176,34 @@ def cleanup_orphaned_resources(ecs_client: EcsClient, vpc_client: VpcClient) -> 
             NovaDeleteKeypairRequest(keypair_name=n)
         ), f"orphan keypair {name}")
 
+    # 6. Orphan volumes from crashed runs (restore-<hex8> / scratch-restore-*).
+    #    Attached ones die with their orphan ECS in pass 1; this catches the
+    #    created-but-never-attached leftovers that silently drain EVS quota.
+    if evs_client is not None:
+        try:
+            vols = evs_client.list_volumes(ListVolumesRequest(limit=1000)).volumes or []
+            orphan_vols = [
+                v for v in vols
+                if v.id not in protect
+                and (v.status or "") == "available"
+                and (
+                    bool(_RESTORE_VOL_RE.match(v.name or ""))
+                    or (v.name or "").startswith(_ORPHAN_VOL_PREFIX)
+                )
+            ]
+        except Exception as e:
+            logger.warning("Orphan volume listing failed: %s", e)
+            orphan_vols = []
+        for v in orphan_vols:
+            logger.info(
+                "Deleting orphan volume %s ('%s', %sGB)",
+                v.id, v.name, getattr(v, "size", "?"),
+            )
+            _safe(
+                lambda vid=v.id: evs_client.delete_volume(DeleteVolumeRequest(volume_id=vid)),
+                f"orphan volume {v.id}",
+            )
+
 
 def _remove_subnet_from_routers(vpc_client: VpcClient, subnet_id: str) -> None:
     """Remove a subnet from all routers that reference it."""
@@ -191,11 +236,12 @@ def cleanup_resources(
     image_id: str = "",
     volume_id: str = "",
     keypair_name: str = "",
+    scratch_volume_id: str = "",
 ) -> None:
     """Delete all temporary resources created during the pipeline.
 
-    Order: ECS -> volume -> keypair -> subnet -> security group -> VPC -> image.
-    CBR backups are never touched.
+    Order: ECS -> volume -> scratch volume -> keypair -> subnet ->
+    security group -> VPC -> image. CBR backups are never touched.
     """
     logger.info("=== Cleanup de recursos temporales ===")
 
@@ -213,6 +259,13 @@ def cleanup_resources(
     if evs_client and volume_id:
         logger.info("Deleting volume %s...", volume_id)
         _safe(lambda: evs_client.delete_volume(DeleteVolumeRequest(volume_id=volume_id)), f"volume {volume_id}")
+
+    if evs_client and scratch_volume_id:
+        logger.info("Deleting scratch volume %s...", scratch_volume_id)
+        _safe(
+            lambda: evs_client.delete_volume(DeleteVolumeRequest(volume_id=scratch_volume_id)),
+            f"scratch volume {scratch_volume_id}",
+        )
 
     if ecs_client and keypair_name:
         logger.info("Deleting keypair %s...", keypair_name)
