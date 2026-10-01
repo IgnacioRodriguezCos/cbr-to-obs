@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from huaweicloudsdkcore.auth.credentials import BasicCredentials
@@ -28,6 +29,11 @@ from huaweicloudsdkobs.v1.obs_client import ObsClient
 from huaweicloudsdkobs.v1.obs_credentials import ObsCredentials
 from huaweicloudsdkobs.v1.region.obs_region import ObsRegion
 
+from huaweicloudsdkdns.v2.dns_client import DnsClient
+from huaweicloudsdkdns.v2.region.dns_region import DnsRegion
+from huaweicloudsdkdns.v2.model.list_name_servers_request import ListNameServersRequest
+
+logger = logging.getLogger(__name__)
 
 _ENDPOINTS = {
     "cbr": "cbr.{region}.myhuaweicloud.com",
@@ -36,7 +42,15 @@ _ENDPOINTS = {
     "ecs": "ecs.{region}.myhuaweicloud.com",
     "vpc": "vpc.{region}.myhuaweicloud.com",
     "obs": "obs.{region}.myhuaweicloud.com",
+    "dns": "dns.{region}.myhuaweicloud.com",
 }
+
+# Official private DNS pairs (support.huaweicloud.com/intl/en-us/dns_faq/dns_faq_002.html)
+# used only if the DNS API query fails.
+_PRIVATE_DNS_FALLBACK = {
+    "la-south-2": ["100.125.1.250", "100.125.0.250"],
+}
+_PRIVATE_DNS_DEFAULT = ["100.125.1.250", "8.8.8.8"]
 
 
 def _get_http_config() -> HttpConfig:
@@ -123,3 +137,42 @@ def build_obs_client(ak: str, sk: str, region_id: str) -> ObsClient:
         .with_region(_resolve_region(ObsRegion, region_id, "obs"))
         .build()
     )
+
+
+def build_dns_client(ak: str, sk: str, region_id: str) -> DnsClient:
+    return (
+        DnsClient.new_builder()
+        .with_http_config(_get_http_config())
+        .with_credentials(BasicCredentials(ak, sk))
+        .with_region(_resolve_region(DnsRegion, region_id, "dns"))
+        .build()
+    )
+
+
+def get_region_private_dns(ak: str, sk: str, region_id: str) -> list[str]:
+    """The region's private DNS servers, via the DNS ListNameServers API.
+
+    These are what a subnet needs in primary_dns/secondary_dns for ECSs to
+    resolve anything (cloud-internal zones like obs.<region>.internal.
+    myhuaweicloud.com AND public domains). Falls back to the documented
+    table, then to a generic default.
+    """
+    try:
+        client = build_dns_client(ak, sk, region_id)
+        resp = client.list_name_servers(
+            ListNameServersRequest(type="private", region=region_id)
+        )
+        servers = [
+            ns.hostname
+            for ns in sorted(resp.nameservers or [], key=lambda n: n.priority or 0)
+            if ns.hostname
+        ]
+        if servers:
+            logger.info("Private DNS for %s (DNS API): %s", region_id, servers)
+            return servers
+        logger.warning("DNS API returned no nameservers for %s — using fallback", region_id)
+    except Exception as e:
+        logger.warning("DNS API query failed for %s (%s) — using fallback", region_id, e)
+    fallback = _PRIVATE_DNS_FALLBACK.get(region_id, _PRIVATE_DNS_DEFAULT)
+    logger.info("Private DNS for %s (fallback): %s", region_id, fallback)
+    return fallback

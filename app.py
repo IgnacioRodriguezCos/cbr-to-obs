@@ -32,7 +32,7 @@ from huaweicloudsdkecs.v2 import (
 from config import PipelineConfig
 from huawei_clients import (
     build_cbr_client, build_evs_client, build_ims_client, build_obs_client,
-    build_ecs_client, build_vpc_client,
+    build_ecs_client, build_vpc_client, get_region_private_dns,
 )
 from stages.discover_backups import discover_backups, detect_backup_os
 from stages.restore_volume import restore_backup, create_empty_volume
@@ -275,6 +275,9 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
         ims_tgt = build_ims_client(ak, sk, config.target_region)
         obs_tgt = build_obs_client(ak, sk, config.target_region)
 
+        dns_servers = get_region_private_dns(ak, sk, config.source_region)
+        logging.info("DNS privado para subnets en %s: %s", config.source_region, dns_servers)
+
         with _pipeline_lock:
             _pipeline_state["status"] = "running"
             _pipeline_state["running"] = True
@@ -376,6 +379,7 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                         enable_ssh=True,
                         os_type="Linux",
                         evs_client=evs_client,
+                        dns_servers=dns_servers,
                     )
                     logging.info("ECS creada: %s con disco %s attachado", ecs_info["server_id"], volume_id)
 
@@ -432,6 +436,7 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                         enable_ssh=False,
                         os_type=os_type,
                         evs_client=evs_client,
+                        dns_servers=dns_servers,
                     )
                     logging.info("ECS creada: %s con disco %s attachado", ecs_info["server_id"], volume_id)
 

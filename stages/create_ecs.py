@@ -56,10 +56,6 @@ logger = logging.getLogger(__name__)
 _VPC_CIDR = "192.168.0.0/16"
 _SUBNET_CIDR = "192.168.0.0/24"
 _GATEWAY_IP = "192.168.0.1"
-# Huawei internal DNS (all regions) + public fallback via EIP.
-# Without dns_list the subnet gets no DNS and the ECS cannot resolve
-# anything (yum/wget fail with 'Could not resolve host').
-_DNS_LIST = ["100.125.1.250", "8.8.8.8"]
 
 
 def _create_vpc(vpc_client: VpcClient, name: str) -> str:
@@ -72,18 +68,35 @@ def _create_vpc(vpc_client: VpcClient, name: str) -> str:
     return vpc_id
 
 
-def _create_subnet(vpc_client: VpcClient, vpc_id: str, name: str) -> str:
+def _create_subnet(
+    vpc_client: VpcClient, vpc_id: str, name: str, dns_servers: list[str] | None
+) -> str:
+    """Create the subnet with working DNS.
+
+    The VPC API applies DNS via primary_dns/secondary_dns; dns_list alone
+    is IGNORED (it is only an extension for >2 servers and must be a
+    superset of the other two). Without primary_dns the subnet has no
+    DNS at all and the ECS cannot resolve anything.
+    """
+    dns_servers = dns_servers or []
     request = CreateSubnetRequest(
         body=CreateSubnetRequestBody(
             subnet=CreateSubnetOption(
                 vpc_id=vpc_id, name=name, cidr=_SUBNET_CIDR, gateway_ip=_GATEWAY_IP,
-                dns_list=_DNS_LIST,
+                primary_dns=dns_servers[0] if len(dns_servers) > 0 else None,
+                secondary_dns=dns_servers[1] if len(dns_servers) > 1 else None,
+                dns_list=dns_servers or None,
             )
         )
     )
     resp = vpc_client.create_subnet(request)
     subnet_id = resp.subnet.id
-    logger.info("Subnet created: %s (%s, dns=%s)", subnet_id, _SUBNET_CIDR, _DNS_LIST)
+    logger.info(
+        "Subnet created: %s (%s, primary_dns=%s secondary_dns=%s)",
+        subnet_id, _SUBNET_CIDR,
+        dns_servers[0] if len(dns_servers) > 0 else None,
+        dns_servers[1] if len(dns_servers) > 1 else None,
+    )
     return subnet_id
 
 
@@ -257,6 +270,7 @@ def create_ecs_and_attach(
     enable_ssh: bool = False,
     os_type: str = "Linux",
     evs_client: EvsClient | None = None,
+    dns_servers: list[str] | None = None,
 ) -> dict:
     """Create an ECS with auto-provisioned networking and attach the restored volume.
 
@@ -265,7 +279,9 @@ def create_ecs_and_attach(
     ECS when the restored disk contains Windows data.
 
     evs_client enables GC of leftover volumes from crashed runs; the current
-    run's volume_id is always protected.
+    run's volume_id is always protected. dns_servers are the region's private
+    DNS servers (see huawei_clients.get_region_private_dns) — without them the
+    subnet has no DNS and nothing resolves on the ECS.
 
     Returns dict with: server_id, vpc_id, subnet_id, security_group_id.
     When enable_ssh=True, also returns: keypair_name, private_key_pem, public_ip.
@@ -281,7 +297,7 @@ def create_ecs_and_attach(
 
     logging.info("[3/6] Provisionando networking automatico...")
     vpc_id = _create_vpc(vpc_client, f"vpc-restore-{suffix}")
-    subnet_id = _create_subnet(vpc_client, vpc_id, f"subnet-restore-{suffix}")
+    subnet_id = _create_subnet(vpc_client, vpc_id, f"subnet-restore-{suffix}", dns_servers)
     sg_id = _create_security_group(vpc_client, f"sg-restore-{suffix}")
 
     keypair_name = None

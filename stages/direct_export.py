@@ -310,6 +310,54 @@ def _wait_for_disks(
     return roles
 
 
+def _pick_obs_host(
+    ssh: paramiko.SSHClient,
+    bucket: str,
+    region: str,
+    expected_data_gb: int | None,
+    max_public_gib: int = 100,
+) -> str:
+    """Choose the OBS upload host, preferring the internal endpoint.
+
+    The internal endpoint (obs.<region>.internal.myhuaweicloud.com) keeps
+    traffic intra-region: no EIP bandwidth limit. It only resolves via the
+    region's private DNS, so resolution is tested on the ECS itself with
+    getent (same glibc resolver curl uses) and /etc/resolv.conf is logged
+    for diagnosis. Falls back to the public endpoint only for small disks
+    (a big VHD through the 5 Mbps EIP would take weeks).
+    """
+    internal = f"{bucket}.obs.{region}.internal.myhuaweicloud.com"
+    public = f"{bucket}.obs.{region}.myhuaweicloud.com"
+
+    logger.info("  DNS de la ECS (resolv.conf):")
+    _run_cmd(ssh, "cat /etc/resolv.conf", timeout=15)
+
+    if _try_cmd(ssh, f"getent hosts {internal}", timeout=30):
+        logger.info("  Endpoint interno OK: %s", internal)
+        return internal
+    logger.warning("  Endpoint interno %s NO resuelve desde la ECS", internal)
+
+    if _try_cmd(ssh, f"getent hosts {public}", timeout=30):
+        if expected_data_gb and expected_data_gb > max_public_gib:
+            raise RuntimeError(
+                f"Solo el endpoint PUBLICO de OBS resuelve, pero el disco es de "
+                f"{expected_data_gb}GiB: por el EIP de 5Mbps la subida tomaria "
+                "semanas. El subnet necesita el DNS privado de la region en "
+                "primary_dns/secondary_dns (revisar el resolv.conf del log)."
+            )
+        logger.warning(
+            "  Usando endpoint PUBLICO de OBS (%s) — subida limitada al "
+            "bandwidth del EIP", public,
+        )
+        return public
+
+    raise RuntimeError(
+        "Ni el endpoint interno ni el publico de OBS resuelven desde la ECS: "
+        "el subnet no tiene DNS funcional. Revisar primary_dns/secondary_dns "
+        "del subnet y el resolv.conf del log."
+    )
+
+
 def direct_export_to_obs(
     public_ip: str,
     private_key_pem: str,
@@ -326,21 +374,22 @@ def direct_export_to_obs(
     The bucket must live in `region` (the ECS's region) so the internal
     endpoint applies. Steps:
     1. SSH connect, ensure qemu-img
-    2. mkfs + mount scratch disk (vdc)
-    3. HEAD pre-flight against the internal OBS endpoint (fast fail)
-    4. qemu-img convert -f raw -O vpc /dev/vdb <scratch>/export.vhd
-    5. curl PUT via presigned URL + HEAD verification
+    2. Pick the OBS host (internal preferred, DNS diagnostics logged)
+    3. mkfs + mount scratch disk (vdc)
+    4. HEAD pre-flight against the chosen endpoint (fast fail)
+    5. qemu-img convert -f raw -O vpc /dev/vdb <scratch>/export.vhd
+    6. curl PUT via presigned URL + HEAD verification
     """
-    host = f"{bucket_name}.obs.{region}.internal.myhuaweicloud.com"
-    expires = int(time.time()) + _PRESIGN_TTL
-    put_url = _obs_presign(ak, sk, "PUT", bucket_name, object_key, host, expires)
-    head_url = _obs_presign(ak, sk, "HEAD", bucket_name, object_key, host, expires)
-    redacted = f"https://{host}/{quote(object_key)}?<firma-oculta>"
-
     ssh = _ssh_connect(public_ip, private_key_pem)
     try:
         logger.info("[4b/6] Verificando qemu-img en la ECS...")
         _install_qemu_img(ssh)
+
+        host = _pick_obs_host(ssh, bucket_name, region, expected_data_gb)
+        expires = int(time.time()) + _PRESIGN_TTL
+        put_url = _obs_presign(ak, sk, "PUT", bucket_name, object_key, host, expires)
+        head_url = _obs_presign(ak, sk, "HEAD", bucket_name, object_key, host, expires)
+        redacted = f"https://{host}/{quote(object_key)}?<firma-oculta>"
 
         roles = _wait_for_disks(ssh, expected_data_gb=expected_data_gb)
         data_dev = f"/dev/{roles['data'][0]}"
