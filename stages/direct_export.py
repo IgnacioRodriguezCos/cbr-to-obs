@@ -63,6 +63,13 @@ def _tail(text: str, n: int = 15) -> str:
     return "\n".join(lines[-n:]) if lines else "(sin salida)"
 
 
+def _as_text(raw) -> str:
+    """Normalize paramiko readline output (bytes in binary mode, str in text mode)."""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw
+
+
 def _run_cmd(ssh: paramiko.SSHClient, cmd: str, timeout: int = _CMD_TIMEOUT) -> str:
     """Run a command over SSH, streaming output to the log. Returns stdout.
 
@@ -83,8 +90,11 @@ def _run_cmd(ssh: paramiko.SSHClient, cmd: str, timeout: int = _CMD_TIMEOUT) -> 
 
     def _drain_stderr() -> None:
         try:
-            for raw in iter(stderr.readline, b""):
-                line = raw.decode("utf-8", errors="replace")
+            while True:
+                raw = stderr.readline()
+                if not raw:
+                    break
+                line = _as_text(raw)
                 err_buf.append(line)
                 logger.info("    [stderr] %s", line.rstrip())
         except Exception:
@@ -95,8 +105,11 @@ def _run_cmd(ssh: paramiko.SSHClient, cmd: str, timeout: int = _CMD_TIMEOUT) -> 
 
     out_buf: list[str] = []
     try:
-        for raw in iter(stdout.readline, b""):
-            line = raw.decode("utf-8", errors="replace")
+        while True:
+            raw = stdout.readline()
+            if not raw:
+                break
+            line = _as_text(raw)
             out_buf.append(line)
             n = len(out_buf)
             if n <= 10 or n % 50 == 0:
