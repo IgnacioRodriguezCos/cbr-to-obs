@@ -148,14 +148,33 @@ def _try_cmd(ssh: paramiko.SSHClient, cmd: str, timeout: int) -> bool:
         return False
 
 
-def _install_qemu_img(ssh: paramiko.SSHClient) -> None:
-    """Install qemu-img on the helper ECS, one strategy at a time.
+def _log_qemu_img_version(ssh: paramiko.SSHClient) -> None:
+    """Best-effort version logging via the package manager.
 
-    Order: already present -> stock yum repos (Huawei images point at
-    repo.huaweicloud.com, which still serves CentOS 7) -> deterministic
+    Old qemu-img (1.5.3 on CentOS 7) has no --version flag: it dumps its
+    usage to stdout and exits 1, so the package query is the only reliable
+    way to log which build is in use.
+    """
+    try:
+        _run_cmd(
+            ssh,
+            "rpm -q qemu-img 2>/dev/null || dpkg -s qemu-utils 2>/dev/null | grep -i ^Version",
+            timeout=30,
+        )
+    except RuntimeError:
+        pass
+
+
+def _install_qemu_img(ssh: paramiko.SSHClient) -> None:
+    """Ensure qemu-img is available on the helper ECS.
+
+    The Huawei CentOS image ships qemu-img already; presence is checked
+    with 'command -v' because 'qemu-img --version' is NOT a valid check
+    on old builds (usage dump + exit 1).
+
+    Install order if absent: stock yum repos -> deterministic
     vault.centos.org repo file (CentOS 7 EOL fallback) -> qemu-kvm
-    (pulls qemu-img as a dependency) -> apt. Each failure is logged with
-    its full output; the final verification raises a clear error.
+    (pulls qemu-img as a dependency) -> apt.
     """
     logger.info("  Diagnostico del OS de la ECS auxiliar:")
     _run_cmd(
@@ -164,7 +183,8 @@ def _install_qemu_img(ssh: paramiko.SSHClient) -> None:
         timeout=30,
     )
 
-    if _try_cmd(ssh, "qemu-img --version", timeout=30):
+    if _try_cmd(ssh, "command -v qemu-img", timeout=30):
+        _log_qemu_img_version(ssh)
         return
 
     steps = [
@@ -188,13 +208,12 @@ def _install_qemu_img(ssh: paramiko.SSHClient) -> None:
         if _try_cmd(ssh, cmd, tmo):
             break
 
-    try:
-        _run_cmd(ssh, "qemu-img --version", timeout=30)
-    except RuntimeError as e:
+    if not _try_cmd(ssh, "command -v qemu-img", timeout=30):
         raise RuntimeError(
             "qemu-img no quedo instalado tras agotar todas las alternativas "
-            "(revisar la salida de yum/apt arriba en el log). Detalle del ultimo intento:\n" + str(e)
+            "(revisar la salida de yum/apt arriba en el log)"
         )
+    _log_qemu_img_version(ssh)
 
 
 def _install_obsutil(ssh: paramiko.SSHClient) -> None:
@@ -319,9 +338,11 @@ def direct_export_to_obs(
 
         vhd_path = f"{_SCRATCH_MOUNT}/export.vhd"
         logger.info("[5b/6] Convirtiendo %s a VHD (puede tardar horas)...", data_dev)
+        # 'vpc' is qemu's canonical name for the VHD format; old qemu-img
+        # (1.5.3) does not recognize the 'vhd' alias.
         _run_cmd(
             ssh,
-            f"qemu-img convert -p -f raw -O vhd {data_dev} {vhd_path}",
+            f"qemu-img convert -p -f raw -O vpc {data_dev} {vhd_path}",
             timeout=7200,
         )
 
