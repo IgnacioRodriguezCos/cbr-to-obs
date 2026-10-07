@@ -295,6 +295,20 @@ def _try_cmd(ssh: _SshSession, cmd: str, timeout: int) -> bool:
         return False
 
 
+def _cmd_ok(ssh: _SshSession, cmd: str, timeout: int) -> bool:
+    """Quiet success check: True on exit 0, False otherwise (no warning).
+
+    For presence checks where failure is an expected outcome, not an
+    error: _try_cmd's "Paso fallo — probando siguiente alternativa" reads
+    like a skipped install alternative when it only means 'not installed'.
+    """
+    try:
+        _run_cmd(ssh, cmd, timeout=timeout)
+        return True
+    except RuntimeError:
+        return False
+
+
 def _log_qemu_img_version(ssh: _SshSession) -> None:
     """Best-effort version logging via the package manager.
 
@@ -330,9 +344,14 @@ def _install_qemu_img(ssh: _SshSession) -> None:
         timeout=30,
     )
 
-    if _try_cmd(ssh, "command -v qemu-img", timeout=30):
+    if _cmd_ok(ssh, "command -v qemu-img", timeout=30):
         _log_qemu_img_version(ssh)
         return
+    logger.info(
+        "  qemu-img no está preinstalado en esta imagen — instalando "
+        "(orden de alternativas: repos originales -> vault.centos.org -> "
+        "qemu-kvm -> apt)"
+    )
 
     steps = [
         ("yum con repos originales", "yum install -y qemu-img", 600),
@@ -355,7 +374,7 @@ def _install_qemu_img(ssh: _SshSession) -> None:
         if _try_cmd(ssh, cmd, tmo):
             break
 
-    if not _try_cmd(ssh, "command -v qemu-img", timeout=30):
+    if not _cmd_ok(ssh, "command -v qemu-img", timeout=30):
         raise RuntimeError(
             "qemu-img no quedo instalado tras agotar todas las alternativas "
             "(revisar la salida de yum/apt arriba en el log)"
