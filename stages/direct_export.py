@@ -669,20 +669,34 @@ def direct_export_to_obs(
         _run_cmd(ssh, f"df -h {_SCRATCH_MOUNT}", timeout=30)
 
         logger.info("[5b/6] Pre-flight del upload contra OBS (endpoint elegido)...")
-        code_out = _run_cmd(
+        # -sI = proper HEAD. The URL is HEAD-signed and the verb is part of
+        # the V2 StringToSign: a plain GET here (no -I) is guaranteed
+        # SignatureDoesNotMatch -> 403. OBS reports errors in the
+        # x-obs-error-* headers of HEAD responses (no body by definition).
+        head_out = _run_cmd(
             ssh,
-            f"curl -s -o /dev/null -w '%{{http_code}}' -H 'Content-Type:' '{head_url}'",
+            f"curl -sI -w '\\nHTTP_CODE:%{{http_code}}' -H 'Content-Type:' '{head_url}'",
             timeout=120,
-            display=f"curl HEAD {redacted}",
+            display=f"curl -sI {redacted}",
         )
-        code = code_out.strip().splitlines()[-1].strip() if code_out.strip() else ""
+        lines = [l.rstrip() for l in head_out.splitlines() if l.strip()]
+        code = ""
+        for line in reversed(lines):
+            if line.startswith("HTTP_CODE:"):
+                code = line.split(":", 1)[1].strip()
+                break
         if code not in ("200", "404"):
+            err_bits = [l for l in lines
+                        if l.lower().startswith(("http/", "x-obs-error"))]
             raise RuntimeError(
                 f"Pre-flight OBS devolvio HTTP {code!r} (esperaba 404 = objeto "
-                "aun inexistente, o 200 = ya existe de una corrida previa). "
+                "aun inexistente, o 200 = ya existe de una corrida previa).\n"
+                "--- respuesta de OBS ---\n" + "\n".join(err_bits) + "\n"
                 "Si es 000/conexion: DNS del endpoint, o falta el gateway VPC "
                 "endpoint de OBS (ruta 100.125.0.0/16) si resuelve a IP privada. "
-                "Si es 403: firma o bucket en otra region."
+                "Si es 403: x-obs-error-code de arriba nombra la causa exacta "
+                "(SignatureDoesNotMatch=firma, InvalidAccessKeyId=AK, "
+                "AccessDenied=permisos)."
             )
         logger.info("Pre-flight OK (HTTP %s) — endpoint, TLS y firma validos", code)
 
@@ -720,7 +734,12 @@ def direct_export_to_obs(
         )
         status_line = head_out.strip().splitlines()[0] if head_out.strip() else ""
         if " 200" not in status_line:
-            raise RuntimeError(f"Verificacion HEAD fallo: {status_line!r} (esperaba 200)")
+            err_bits = [l.strip() for l in head_out.splitlines()
+                        if l.lower().startswith("x-obs-error")]
+            raise RuntimeError(
+                f"Verificacion HEAD fallo: {status_line!r} (esperaba 200)\n"
+                + "\n".join(err_bits)
+            )
         for line in head_out.splitlines():
             if line.lower().startswith("content-length"):
                 logger.info("Objeto en OBS — %s", line.strip())
