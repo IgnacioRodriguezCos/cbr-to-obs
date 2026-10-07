@@ -24,6 +24,8 @@ from huaweicloudsdkims.v2.ims_client import ImsClient
 from huaweicloudsdkims.v2 import GlanceDeleteImageRequest
 from huaweicloudsdkevs.v2.evs_client import EvsClient
 from huaweicloudsdkevs.v2 import DeleteVolumeRequest, ListVolumesRequest
+from huaweicloudsdkvpcep.v1.vpcep_client import VpcepClient
+from huaweicloudsdkvpcep.v1 import DeleteEndpointRequest, ListEndpointsRequest
 from huaweicloudsdkcore.exceptions import exceptions
 
 logger = logging.getLogger(__name__)
@@ -84,6 +86,7 @@ def cleanup_orphaned_resources(
     vpc_client: VpcClient,
     evs_client: EvsClient | None = None,
     protect_volume_ids: set[str] | None = None,
+    vpcep_client: VpcepClient | None = None,
 ) -> None:
     """Garbage-collect resources left behind by failed pipeline runs.
 
@@ -142,6 +145,25 @@ def cleanup_orphaned_resources(
                               if (v.name or "").startswith(_ORPHAN_PREFIXES["vpc"]))
     except Exception as e:
         logger.warning("Orphan VPC listing failed: %s", e)
+
+    # 3b. Orphan VPC endpoints (they pin the VPC: must go before it)
+    if vpcep_client is not None and orphan_vpc_ids:
+        try:
+            eps = vpcep_client.list_endpoints(
+                ListEndpointsRequest(limit=1000)
+            ).endpoints or []
+            orphan_eps = [ep for ep in eps if (ep.vpc_id or "") in orphan_vpc_ids]
+        except Exception as e:
+            logger.warning("Orphan VPC endpoint listing failed: %s", e)
+            orphan_eps = []
+        for ep in orphan_eps:
+            logger.info("Deleting orphan VPC endpoint %s (vpc %s)", ep.id, ep.vpc_id)
+            _safe(lambda e=ep: vpcep_client.delete_endpoint(
+                DeleteEndpointRequest(vpc_endpoint_id=e.id)
+            ), f"orphan VPC endpoint {ep.id}")
+        if orphan_eps:
+            time.sleep(3)
+
     for vid in orphan_vpc_ids:
         _safe(lambda v=vid: vpc_client.delete_vpc(DeleteVpcRequest(vpc_id=v)),
               f"orphan VPC {vid}")
@@ -237,11 +259,13 @@ def cleanup_resources(
     volume_id: str = "",
     keypair_name: str = "",
     scratch_volume_id: str = "",
+    vpcep_client: VpcepClient | None = None,
+    vpc_endpoint_id: str = "",
 ) -> None:
     """Delete all temporary resources created during the pipeline.
 
-    Order: ECS -> volume -> scratch volume -> keypair -> subnet ->
-    security group -> VPC -> image. CBR backups are never touched.
+    Order: ECS -> volume -> scratch volume -> keypair -> VPC endpoint ->
+    subnet -> security group -> VPC -> image. CBR backups are never touched.
     """
     logger.info("=== Cleanup de recursos temporales ===")
 
@@ -270,6 +294,12 @@ def cleanup_resources(
     if ecs_client and keypair_name:
         logger.info("Deleting keypair %s...", keypair_name)
         _safe(lambda: ecs_client.nova_delete_keypair(NovaDeleteKeypairRequest(keypair_name=keypair_name)), f"keypair {keypair_name}")
+
+    if vpcep_client and vpc_endpoint_id:
+        logger.info("Deleting VPC endpoint %s...", vpc_endpoint_id)
+        _safe(lambda: vpcep_client.delete_endpoint(
+            DeleteEndpointRequest(vpc_endpoint_id=vpc_endpoint_id)
+        ), f"VPC endpoint {vpc_endpoint_id}")
 
     if vpc_client and subnet_id and vpc_id:
         logger.info("Deleting subnet %s...", subnet_id)

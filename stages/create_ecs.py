@@ -39,6 +39,8 @@ from huaweicloudsdkims.v2 import ListImagesRequest
 
 from huaweicloudsdkevs.v2.evs_client import EvsClient
 
+from huaweicloudsdkvpcep.v1.vpcep_client import VpcepClient
+
 from huaweicloudsdkvpc.v2.vpc_client import VpcClient
 from huaweicloudsdkvpc.v2 import (
     CreateVpcRequest, CreateVpcRequestBody, CreateVpcOption,
@@ -271,6 +273,7 @@ def create_ecs_and_attach(
     os_type: str = "Linux",
     evs_client: EvsClient | None = None,
     dns_servers: list[str] | None = None,
+    vpcep_client: VpcepClient | None = None,
 ) -> dict:
     """Create an ECS with auto-provisioned networking and attach the restored volume.
 
@@ -281,7 +284,8 @@ def create_ecs_and_attach(
     evs_client enables GC of leftover volumes from crashed runs; the current
     run's volume_id is always protected. dns_servers are the region's private
     DNS servers (see huawei_clients.get_region_private_dns) — without them the
-    subnet has no DNS and nothing resolves on the ECS.
+    subnet has no DNS and nothing resolves on the ECS. vpcep_client enables GC
+    of leftover VPC endpoints (they pin their VPC).
 
     Returns dict with: server_id, vpc_id, subnet_id, security_group_id.
     When enable_ssh=True, also returns: keypair_name, private_key_pem, public_ip.
@@ -293,6 +297,7 @@ def create_ecs_and_attach(
         ecs_client, vpc_client,
         evs_client=evs_client,
         protect_volume_ids={volume_id} if volume_id else None,
+        vpcep_client=vpcep_client,
     )
 
     logging.info("[3/6] Provisionando networking automatico...")

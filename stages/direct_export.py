@@ -8,9 +8,15 @@ a scratch disk, and upload with curl using an OBS presigned URL.
 Design notes:
 - The VHD is written to a scratch data disk (the 40 GB root volume cannot
   hold it). Disk roles by attach order: vda=root, vdb=data, vdc=scratch.
-- The upload targets the INTERNAL OBS endpoint (obs.<region>.internal.
-  myhuaweicloud.com): intra-region traffic, no EIP bandwidth limit (the
-  public endpoint would cap a 1 TiB upload at the EIP's 5 Mbps ~ weeks).
+- The upload targets OBS with PRIVATE routing so the EIP's 5 Mbps cap
+  never applies (a 1 TiB upload through the EIP would take weeks):
+  * Chinese regions: the INTERNAL endpoint obs.<region>.internal.
+    myhuaweicloud.com, only resolvable via the subnet's private DNS.
+  * International regions (LA/AP/EU): no .internal domain exists — the
+    subnet's private DNS resolves the PUBLIC domain to a private
+    100.125.x.x IP, and the OBS gateway VPC endpoint (created by the
+    pipeline, see stages/vpcep_endpoint.py) routes 100.125.0.0/16
+    inside the cloud network. The resolved IPs are verified private.
 - The presigned URL is computed on the laptop (OBS V2 signature); the AK
   signs the request and the SK never reaches the ECS. URLs are redacted
   from logs. This replaces obsutil entirely: no external downloads, no
@@ -36,6 +42,7 @@ import base64
 import hashlib
 import hmac
 import io
+import ipaddress
 import logging
 import shlex
 import socket
@@ -435,6 +442,27 @@ def _wait_for_disks(
     return roles
 
 
+def _resolved_ips(ssh: _SshSession, host: str) -> list[str]:
+    """IPv4 addresses the ECS resolves for `host` (via getent)."""
+    try:
+        out = _run_cmd(
+            ssh,
+            f"getent ahostsv4 {host} | awk '{{print $1}}' | sort -u",
+            timeout=30,
+        )
+    except RuntimeError:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _is_private_obs_ip(ip: str) -> bool:
+    """True if ip is inside OBS's reserved private CIDR 100.125.0.0/16."""
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network("100.125.0.0/16")
+    except ValueError:
+        return False
+
+
 def _pick_obs_host(
     ssh: _SshSession,
     bucket: str,
@@ -442,14 +470,18 @@ def _pick_obs_host(
     expected_data_gb: int | None,
     max_public_gib: int = 100,
 ) -> str:
-    """Choose the OBS upload host, preferring the internal endpoint.
+    """Choose the OBS upload host with PRIVATE routing (no EIP cap).
 
-    The internal endpoint (obs.<region>.internal.myhuaweicloud.com) keeps
-    traffic intra-region: no EIP bandwidth limit. It only resolves via the
-    region's private DNS, so resolution is tested on the ECS itself with
-    getent (same glibc resolver curl uses) and /etc/resolv.conf is logged
-    for diagnosis. Falls back to the public endpoint only for small disks
-    (a big VHD through the 5 Mbps EIP would take weeks).
+    Two private-access mechanisms, tried in order:
+    1. obs.<region>.internal.myhuaweicloud.com — Chinese regions; only
+       resolvable via the subnet's private DNS.
+    2. The PUBLIC domain obs.<region>.myhuaweicloud.com — international
+       regions: the subnet's private DNS resolves it to a private
+       100.125.x.x IP and the OBS gateway VPC endpoint (created by the
+       pipeline) routes 100.125.0.0/16 inside the cloud network. The
+       resolved IPs are verified to be private — a public IP means the
+       private DNS isn't in effect and traffic would egress via the EIP.
+    Small disks may fall back to the public endpoint through the EIP.
     """
     internal = f"{bucket}.obs.{region}.internal.myhuaweicloud.com"
     public = f"{bucket}.obs.{region}.myhuaweicloud.com"
@@ -457,29 +489,40 @@ def _pick_obs_host(
     logger.info("  DNS de la ECS (resolv.conf):")
     _run_cmd(ssh, "cat /etc/resolv.conf", timeout=15)
 
-    if _try_cmd(ssh, f"getent hosts {internal}", timeout=30):
+    if _cmd_ok(ssh, f"getent hosts {internal}", timeout=30):
         logger.info("  Endpoint interno OK: %s", internal)
         return internal
-    logger.warning("  Endpoint interno %s NO resuelve desde la ECS", internal)
+    logger.info(
+        "  Endpoint interno %s no resuelve (normal en regiones internacionales)",
+        internal,
+    )
 
-    if _try_cmd(ssh, f"getent hosts {public}", timeout=30):
+    ips = _resolved_ips(ssh, public)
+    if ips:
+        private = [ip for ip in ips if _is_private_obs_ip(ip)]
+        if private:
+            logger.info(
+                "  %s resuelve a IP privada %s — trafico intra-cloud via gateway "
+                "endpoint de OBS, sin limite del EIP", public, private,
+            )
+            return public
         if expected_data_gb and expected_data_gb > max_public_gib:
             raise RuntimeError(
-                f"Solo el endpoint PUBLICO de OBS resuelve, pero el disco es de "
-                f"{expected_data_gb}GiB: por el EIP de 5Mbps la subida tomaria "
-                "semanas. El subnet necesita el DNS privado de la region en "
-                "primary_dns/secondary_dns (revisar el resolv.conf del log)."
+                f"{public} resuelve a IP PUBLICA ({ips}) desde la ECS: el DNS "
+                "privado del subnet no esta en efecto (el resolv.conf de arriba "
+                "deberia listar 100.125.x.x). Con el EIP de 5Mbps la subida de "
+                f"{expected_data_gb}GiB tomaria semanas."
             )
         logger.warning(
-            "  Usando endpoint PUBLICO de OBS (%s) — subida limitada al "
-            "bandwidth del EIP", public,
+            "  Usando endpoint PUBLICO via EIP (%s -> %s) — subida limitada al "
+            "bandwidth del EIP", public, ips,
         )
         return public
 
     raise RuntimeError(
-        "Ni el endpoint interno ni el publico de OBS resuelven desde la ECS: "
-        "el subnet no tiene DNS funcional. Revisar primary_dns/secondary_dns "
-        "del subnet y el resolv.conf del log."
+        f"Ni {internal} ni {public} resuelven desde la ECS: el subnet no tiene "
+        "DNS funcional. Revisar primary_dns/secondary_dns del subnet y el "
+        "resolv.conf del log."
     )
 
 
@@ -625,7 +668,7 @@ def direct_export_to_obs(
         )
         _run_cmd(ssh, f"df -h {_SCRATCH_MOUNT}", timeout=30)
 
-        logger.info("[5b/6] Pre-flight del upload contra OBS interno...")
+        logger.info("[5b/6] Pre-flight del upload contra OBS (endpoint elegido)...")
         code_out = _run_cmd(
             ssh,
             f"curl -s -o /dev/null -w '%{{http_code}}' -H 'Content-Type:' '{head_url}'",
@@ -637,9 +680,11 @@ def direct_export_to_obs(
             raise RuntimeError(
                 f"Pre-flight OBS devolvio HTTP {code!r} (esperaba 404 = objeto "
                 "aun inexistente, o 200 = ya existe de una corrida previa). "
-                "Revisar: DNS del endpoint interno, firma, o bucket en otra region."
+                "Si es 000/conexion: DNS del endpoint, o falta el gateway VPC "
+                "endpoint de OBS (ruta 100.125.0.0/16) si resuelve a IP privada. "
+                "Si es 403: firma o bucket en otra region."
             )
-        logger.info("Pre-flight OK (HTTP %s) — endpoint interno, TLS y firma validos", code)
+        logger.info("Pre-flight OK (HTTP %s) — endpoint, TLS y firma validos", code)
 
         vhd_path = f"{_SCRATCH_MOUNT}/export.vhd"
         logger.info("[5b/6] Convirtiendo %s a VHD (background — puede tardar horas)...", data_dev)

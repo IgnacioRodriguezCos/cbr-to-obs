@@ -33,6 +33,9 @@ from huaweicloudsdkdns.v2.dns_client import DnsClient
 from huaweicloudsdkdns.v2.region.dns_region import DnsRegion
 from huaweicloudsdkdns.v2.model.list_name_servers_request import ListNameServersRequest
 
+from huaweicloudsdkvpcep.v1.vpcep_client import VpcepClient
+from huaweicloudsdkvpcep.v1.region.vpcep_region import VpcepRegion
+
 logger = logging.getLogger(__name__)
 
 _ENDPOINTS = {
@@ -43,6 +46,7 @@ _ENDPOINTS = {
     "vpc": "vpc.{region}.myhuaweicloud.com",
     "obs": "obs.{region}.myhuaweicloud.com",
     "dns": "dns.{region}.myhuaweicloud.com",
+    "vpcep": "vpcep.{region}.myhuaweicloud.com",
 }
 
 # Official private DNS pairs (support.huaweicloud.com/intl/en-us/dns_faq/dns_faq_002.html)
@@ -145,6 +149,16 @@ def build_dns_client(ak: str, sk: str, region_id: str) -> DnsClient:
         .with_http_config(_get_http_config())
         .with_credentials(BasicCredentials(ak, sk))
         .with_region(_resolve_region(DnsRegion, region_id, "dns"))
+        .build()
+    )
+
+
+def build_vpcep_client(ak: str, sk: str, region_id: str) -> VpcepClient:
+    return (
+        VpcepClient.new_builder()
+        .with_http_config(_get_http_config())
+        .with_credentials(BasicCredentials(ak, sk))
+        .with_region(_resolve_region(VpcepRegion, region_id, "vpcep"))
         .build()
     )
 

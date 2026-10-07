@@ -32,7 +32,8 @@ from huaweicloudsdkecs.v2 import (
 from config import PipelineConfig
 from huawei_clients import (
     build_cbr_client, build_evs_client, build_ims_client, build_obs_client,
-    build_ecs_client, build_vpc_client, get_region_private_dns,
+    build_ecs_client, build_vpc_client, build_vpcep_client,
+    get_region_private_dns,
 )
 from stages.discover_backups import discover_backups, detect_backup_os
 from stages.restore_volume import restore_backup, create_empty_volume
@@ -41,6 +42,7 @@ from stages.create_image import create_image
 from stages.cross_region import copy_image_cross_region
 from stages.export_to_obs import ensure_bucket, export_image_to_obs, verify_object_exists
 from stages.direct_export import direct_export_to_obs
+from stages.vpcep_endpoint import ensure_obs_gateway_endpoint
 from stages.cleanup import cleanup_resources
 
 app = FastAPI()
@@ -332,6 +334,8 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
             ecs_client = None
             vpc_client = None
             scratch_volume_id = None
+            vpcep_client = None
+            vpc_endpoint_id = None
             is_large_disk = backup.resource_size_gb > 1024
 
             try:
@@ -370,6 +374,7 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                     logging.info("[3/6] Creando ECS automatica (Linux, SSH) y attachando disco...")
                     ecs_client = build_ecs_client(ak, sk, config.source_region)
                     vpc_client = build_vpc_client(ak, sk, config.source_region)
+                    vpcep_client = build_vpcep_client(ak, sk, config.source_region)
                     ecs_info = create_ecs_and_attach(
                         ecs_client=ecs_client,
                         vpc_client=vpc_client,
@@ -380,8 +385,18 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                         os_type="Linux",
                         evs_client=evs_client,
                         dns_servers=dns_servers,
+                        vpcep_client=vpcep_client,
                     )
                     logging.info("ECS creada: %s con disco %s attachado", ecs_info["server_id"], volume_id)
+
+                    _check_stop()
+                    logging.info(
+                        "[3c/6] Creando gateway VPC endpoint de OBS "
+                        "(ruta privada 100.125.0.0/16, sin limite del EIP)..."
+                    )
+                    vpc_endpoint_id = ensure_obs_gateway_endpoint(
+                        vpcep_client, ecs_info["vpc_id"], config.source_region,
+                    )
 
                     _check_stop()
                     scratch_gb = backup.resource_size_gb + 16
@@ -409,7 +424,7 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                     _check_stop()
                     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
                     object_key = f"{config.bucket_prefix}/{image_name}_{timestamp}.vhd"
-                    logging.info("[4-6/6] Export directo a OBS (qemu-img VHD + obsutil)...")
+                    logging.info("[4-6/6] Export directo a OBS (qemu-img VHD + presigned URL)...")
                     success = direct_export_to_obs(
                         public_ip=ecs_info["public_ip"],
                         private_key_pem=ecs_info["private_key_pem"],
@@ -502,6 +517,8 @@ def _run_pipeline_thread(ak: str, sk: str, req: PipelineRunRequest):
                         volume_id=volume_id or "",
                         keypair_name=(ecs_info or {}).get("keypair_name", ""),
                         scratch_volume_id=scratch_volume_id or "",
+                        vpcep_client=vpcep_client,
+                        vpc_endpoint_id=vpc_endpoint_id or "",
                     )
 
             with _pipeline_lock:
